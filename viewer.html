@@ -76,12 +76,21 @@ function httpError(resp,place){
 }
 async function requestHref(url){
   const remaining=cooldownRemaining();
-  if(remaining>0)throw new Error("Яндекс временно ограничил запросы. Повторная попытка возможна примерно через "+Math.ceil(remaining/60000)+" мин. Не обновляйте страницу многократно.");
+  if(remaining>0)throw new Error("После HTTP 429 включена местная защитная пауза: осталось "+Math.ceil(remaining/60000)+" мин. Это таймер нашего тестового сайта, а не обещание Яндекса снять ограничение. Не обновляйте страницу многократно.");
   const api="https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key="+encodeURIComponent(url);
   const resp=await fetch(api,{cache:"no-store",mode:"cors"});
   if(resp.status===429){
+    const retryAfter=resp.headers.get("Retry-After");
     const wait=retryWait(resp);setCooldown(wait);
-    throw new Error("Яндекс.Диск вернул HTTP 429 — ограничение запросов. Не повторяйте попытку подряд. Проверить снова можно ориентировочно через "+Math.ceil(wait/60000)+" мин; точный срок Яндексом не подтверждён.");
+    let reason="";
+    try{
+      const details=await resp.json();
+      const value=details?.description||details?.message||details?.error||"";
+      if(typeof value==="string"&&value.length)reason="\\nОтвет API: "+value.slice(0,250);
+    }catch{}
+    throw new Error("API Яндекс.Диска вернул HTTP 429 — слишком много запросов или достигнут другой лимит.\\n"+
+      (retryAfter?"Сервер указал Retry-After. ":"Сервер не сообщил доступное браузеру время восстановления. ")+
+      "Наш сайт включил защитную паузу "+Math.ceil(wait/60000)+" мин; она НЕ гарантирует, что ограничение Яндекса закончится."+reason);
   }
   if(!resp.ok)throw httpError(resp,"API Яндекс.Диска");
   const meta=await resp.json();
