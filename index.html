@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>ЭКСПЕРТ — проверка PDF.js и Яндекс.Диска</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#101316;color:#f4f4f4}
+*{box-sizing:border-box}body{margin:0;padding:20px 16px 70px}main{max-width:740px;margin:auto}
+header{display:flex;gap:14px;align-items:center;padding:10px 0 20px} .mark{height:40px;width:4px;background:#a23c42;border-radius:3px}
+h1{margin:0;font-size:23px;letter-spacing:.01em}h2{font-size:17px;margin:0 0 12px}p{color:#aeb8bd;line-height:1.55;font-size:14px}
+small{color:#9aa6ad}.sub{color:#aeb8bd;font-size:13px;margin:3px 0 0}
+.panel{background:#1c2126;border:1px solid #343d45;border-radius:16px;padding:18px;margin:15px 0}
+button{appearance:none;background:#963d45;color:#fff;font-size:15px;font-weight:650;border:0;border-radius:11px;padding:13px 18px;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}.secondary{background:#343e47}button:focus-visible{outline:3px solid #e39da1}
+.actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0 0}
+ol{list-style:none;margin:0;padding:0;display:grid;gap:9px}.step{display:flex;align-items:start;gap:10px;padding:8px 0;border-bottom:1px solid #343a3f}
+.step:last-child{border:0}.dot{height:22px;min-width:22px;border-radius:50%;display:grid;place-items:center;background:#394047;font-size:12px}
+.step[data-state="ok"] .dot{background:#235640;color:#b5f5d1}.step[data-state="bad"] .dot{background:#653139;color:#ffd4d4}
+.step[data-state="run"] .dot{background:#584c2d;color:#f8dfa0}.step strong{font-size:14px}.step em{display:block;font-style:normal;font-size:12px;color:#aeb8bd;margin-top:3px;overflow-wrap:anywhere}
+#notice{white-space:pre-wrap;overflow-wrap:anywhere;border-radius:10px;padding:12px;background:#10161b;color:#d1d9de;font-size:13px}
+#notice.good{border-left:3px solid #65bb89}#notice.bad{border-left:3px solid #d16c6c}
+#render{display:grid;gap:18px} .page{background:#fff;border-radius:6px;padding:7px;box-shadow:0 6px 20px #0005;color:#444;text-align:center}
+.page canvas{width:100%;height:auto;display:block}.page .label{font-size:12px;padding-top:6px}
+a{color:#c4d8fc}footer{margin-top:26px;font-size:12px;color:#8c999f;line-height:1.6}
+</style>
+</head>
+<body><main>
+<header><span class="mark" aria-hidden="true"></span><div><h1>ЭКСПЕРТ</h1><div class="sub">Проверка PDF.js + Яндекс.Диск</div></div></header>
+<div class="panel">
+<h2>Тест открытия сметы из браузера</h2>
+<p>Эта страница проверяет, можно ли получить PDF из публичной ссылки Яндекс.Диска и показать его через PDF.js без приложения Диска. Используется только тестовая смета.</p>
+<div class="actions"><button id="start">Проверить ещё раз</button><button class="secondary" id="copy">Скопировать результат</button></div>
+</div>
+<div class="panel">
+<h2>Этапы проверки</h2>
+<ol>
+<li class="step" data-state="ok" id="s0"><span class="dot">✓</span><div><strong>Страница открылась</strong><em>Тестовый HTTPS-сайт загружен</em></div></li>
+<li class="step" data-state="" id="s1"><span class="dot">1</span><div><strong>API Яндекс.Диска</strong><em>Получение временного адреса PDF</em></div></li>
+<li class="step" data-state="" id="s2"><span class="dot">2</span><div><strong>Байты PDF</strong><em>Проверка доступа с этого сайта (CORS)</em></div></li>
+<li class="step" data-state="" id="s3"><span class="dot">3</span><div><strong>PDF.js</strong><em>Постраничное отображение документа</em></div></li>
+</ol>
+</div>
+<div class="panel"><h2>Результат</h2><div id="notice" role="status" aria-live="polite">Запускаем проверку…</div></div>
+<div id="render"></div>
+<footer>Эксперимент, не рабочий сервис. Страница не использует OAuth-токены и не сохраняет PDF на сервере GitHub. Для клиентских документов публичное размещение ссылки и безопасность необходимо оценивать отдельно.</footer>
+</main>
+<script type="module">
+const PUBLIC_URL="https://disk.yandex.ru/i/fBVMdQgfw6PoMw";
+const VERSION="6.5.438";
+const CDN="https://cdn.jsdelivr.net/npm/pdfjs-dist@"+VERSION+"/build/";
+const steps=[1,2,3];
+const log=[];
+const $=id=>document.getElementById(id);
+let busy=false;
+function setStep(n,state,msg){
+  const e=$("s"+n);e.dataset.state=state;
+  e.querySelector(".dot").textContent=state==="ok"?"✓":state==="bad"?"!":state==="run"?"…":String(n);
+  if(msg)e.querySelector("em").textContent=msg;
+}
+function note(msg,good=false,bad=false){
+  $("notice").textContent=msg;
+  $("notice").className=good?"good":bad?"bad":"";
+  log.push(msg);
+}
+function failure(stage,err){
+  const msg=err instanceof Error?err.message:String(err);
+  setStep(stage,"bad",msg);
+  let explanation=stage===1?
+    "Браузер не смог прочитать ответ API Яндекса. Возможная причина — CORS, сетевая ошибка или недоступность публикации.":
+    stage===2?"Браузер не смог прочитать сам PDF. Возможная причина — CORS конечного файлового сервера, истёкший адрес или ошибка сети.":
+    "PDF загружен, но не удалось отобразить его через PDF.js.";
+  note("❌ Проверка остановилась на этапе "+stage+".\n"+explanation+"\n\nТехническая ошибка: "+msg,false,true);
+}
+async function run(){
+  if(busy)return;busy=true;$("start").disabled=true;log.length=0;$("render").replaceChildren();
+  for(const s of steps)setStep(s,"","Ожидает проверки");
+  let stage=1;
+  try{
+    setStep(1,"run","Запрашиваем адрес...");
+    note("Проверяем API Яндекс.Диска…");
+    const apiUrl="https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key="+encodeURIComponent(PUBLIC_URL);
+    const api=await fetch(apiUrl,{method:"GET",mode:"cors",cache:"no-store"});
+    if(!api.ok)throw new Error("API HTTP "+api.status);
+    const json=await api.json();
+    if(!json.href||typeof json.href!=="string"||!json.href.startsWith("https://"))throw new Error("В ответе API нет HTTPS href");
+    setStep(1,"ok","Временная ссылка успешно получена");
+    stage=2;setStep(2,"run","Читаем PDF через браузер...");
+    note("API доступен. Проверяем чтение байтов PDF…");
+    const response=await fetch(json.href,{method:"GET",mode:"cors",cache:"no-store"});
+    if(!response.ok)throw new Error("PDF HTTP "+response.status);
+    const buffer=await response.arrayBuffer();
+    const bytes=new Uint8Array(buffer);
+    if(bytes.byteLength<5||String.fromCharCode(...bytes.slice(0,5))!=="%PDF-")throw new Error("Полученный файл не начинается с %PDF-");
+    setStep(2,"ok","Загружено "+(bytes.byteLength/1048576).toFixed(2)+" МиБ");
+    stage=3;setStep(3,"run","Загружаем PDF.js...");
+    note("Байты PDF доступны. Пробуем отобразить страницы…");
+    const pdfjs=await import(CDN+"pdf.mjs");
+    pdfjs.GlobalWorkerOptions.workerSrc=CDN+"pdf.worker.mjs";
+    const pdf=await pdfjs.getDocument({data:bytes}).promise;
+    for(let n=1;n<=pdf.numPages;n++){
+      const page=await pdf.getPage(n);
+      const one=page.getViewport({scale:1});
+      const width=Math.min(690,Math.max(260,$("render").clientWidth-14));
+      const scale=width/one.width;
+      const view=page.getViewport({scale});
+      const pixelRatio=Math.min(window.devicePixelRatio||1,2);
+      const canvas=document.createElement("canvas");
+      canvas.width=Math.ceil(view.width*pixelRatio);
+      canvas.height=Math.ceil(view.height*pixelRatio);
+      const ctx=canvas.getContext("2d",{alpha:false});
+      if(!ctx)throw new Error("Canvas 2D недоступен");
+      const wrapper=document.createElement("div");wrapper.className="page";
+      const label=document.createElement("div");label.className="label";label.textContent="Страница "+n+" из "+pdf.numPages;
+      wrapper.append(canvas,label);$("render").append(wrapper);
+      await page.render({canvas,canvasContext:ctx,viewport:view,transform:[pixelRatio,0,0,pixelRatio,0,0]}).promise;
+    }
+    setStep(3,"ok","Отображено страниц: "+pdf.numPages);
+    note("✅ УСПЕХ! PDF получен с Яндекс.Диска и отображён прямо на этой странице. Проверка проведена в данном браузере. Другие браузеры, сети и сроки действия ссылок пока не проверены.",true);
+  }catch(err){failure(stage,err);}
+  finally{busy=false;$("start").disabled=false;}
+}
+$("start").addEventListener("click",run);
+$("copy").addEventListener("click",async()=>{
+  const s=[...document.querySelectorAll(".step")].map(x=>x.querySelector("strong").textContent+": "+x.dataset.state+" — "+x.querySelector("em").textContent).join("\n");
+  const message="Проверка PDF.js / Яндекс.Диск\n"+s+"\n"+$("notice").textContent;
+  try{await navigator.clipboard.writeText(message);$("copy").textContent="Скопировано";setTimeout(()=>$("copy").textContent="Скопировать результат",1800);}
+  catch(e){window.prompt("Скопируйте результат:",message);}
+});
+run();
+</script></body></html>
