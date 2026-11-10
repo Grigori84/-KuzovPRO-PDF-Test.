@@ -1,13 +1,15 @@
 "use strict";
-// KuzovPRO: ONE bucket / ONE Cloud Function. Prototype only; do not deploy with real data yet.
-// The public-read policy must apply only to estimates/*; staging/* stays private.
+// KuzovPRO: TWO EXISTING buckets / ONE Cloud Function. DRAFT: not deployable for real data.
+// Staging bucket MUST remain entirely private; published bucket is already public-read.
+// STOP: publication/revocation concurrency is NOT yet safe; see README before deployment.
 const { createHash, createPublicKey, randomBytes, verify } = require("node:crypto");
 const { S3Client, PutObjectCommand, HeadObjectCommand, GetObjectCommand,
         CopyObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
-const MAX = 32 * 1024 * 1024;
-const BUCKET = process.env.STORAGE_BUCKET;
+const MAX = 10 * 1024 * 1024;
+const STAGING_BUCKET = process.env.STAGING_BUCKET;
+const PUBLIC_BUCKET = process.env.PUBLIC_BUCKET;
 const VIEWER = process.env.VIEWER_URL ||
   "https://grigori84.github.io/-KuzovPRO-PDF-Test./client.html";
 const ID_RE = /^[a-f0-9]{32}$/;
@@ -26,7 +28,8 @@ const isMissing = e => e?.name === "NotFound" ||
 
 function config() {
   if (process.env.GATEWAY_ENABLED !== "true") throw Error("GATEWAY_DISABLED");
-  if (!BUCKET || !process.env.STORAGE_ACCESS_KEY_ID ||
+  if (!STAGING_BUCKET || !PUBLIC_BUCKET || STAGING_BUCKET === PUBLIC_BUCKET ||
+      !process.env.STORAGE_ACCESS_KEY_ID ||
       !process.env.STORAGE_SECRET_ACCESS_KEY ||
       !process.env.DEVICE_PUBLIC_KEYS_JSON) {
     throw Error("SERVER_NOT_CONFIGURED");
@@ -66,8 +69,8 @@ function validAuth(event, raw, devices) {
       Buffer.from(signature, "base64"));
   } catch (_) { return false; }
 }
-async function head(s3, key) {
-  try { return await s3.send(new HeadObjectCommand({ Bucket: BUCKET, Key: key })); }
+async function head(s3, bucket, key) {
+  try { return await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key })); }
   catch (e) { if (isMissing(e)) return null; throw e; }
 }
 async function begin(s3, body) {
@@ -82,7 +85,7 @@ async function begin(s3, body) {
   const headers = { "Content-Type": "application/pdf", "Content-MD5": md5,
                     "Content-Length": String(length), "If-None-Match": "*" };
   const put = new PutObjectCommand({
-    Bucket: BUCKET, Key: key, ContentType: "application/pdf",
+    Bucket: STAGING_BUCKET, Key: key, ContentType: "application/pdf",
     ContentMD5: md5, ContentLength: length, IfNoneMatch: "*"
   });
   // The mobile client must send all four exact headers; verify the actual
@@ -100,7 +103,7 @@ async function readAndCheck(s3, key, headInfo, length, sha) {
     return false;
   }
   const got = await s3.send(new GetObjectCommand({
-    Bucket: BUCKET, Key: key, IfMatch: headInfo.ETag
+    Bucket: STAGING_BUCKET, Key: key, IfMatch: headInfo.ETag
   }));
   const hash = createHash("sha256");
   let count = 0, prefix = Buffer.alloc(0), tail = Buffer.alloc(0);
@@ -125,32 +128,32 @@ async function publish(s3, body) {
     return response(400, { error: "INVALID_PUBLISH_REQUEST" });
   }
   const from = "staging/" + id + ".pdf", to = "estimates/" + id + ".pdf";
-  const existing = await head(s3, to);
+  const existing = await head(s3, PUBLIC_BUCKET, to);
   if (existing) {
     // A retry after a successful publication returns the same immutable URL.
     return existing.ContentLength === length && existing.Metadata?.sha256 === sha
       ? response(200, { id, url: publicUrl(id), already_published: true })
       : response(409, { error: "PUBLICATION_CONFLICT" });
   }
-  const info = await head(s3, from);
+  const info = await head(s3, STAGING_BUCKET, from);
   if (!info) return response(404, { error: "UPLOAD_NOT_FOUND" });
   if (!(await readAndCheck(s3, from, info, length, sha))) {
     return response(422, { error: "PDF_VERIFICATION_FAILED" });
   }
   // Copy only the source version that was validated; ETag isn't used as SHA-256.
   await s3.send(new CopyObjectCommand({
-    Bucket: BUCKET, Key: to,
-    CopySource: BUCKET + "/" + from,
+    Bucket: PUBLIC_BUCKET, Key: to,
+    CopySource: STAGING_BUCKET + "/" + from,
     CopySourceIfMatch: info.ETag,
     ContentType: "application/pdf", CacheControl: "no-store, max-age=0",
     MetadataDirective: "REPLACE",
     Metadata: { sha256: sha }
   }));
-  const final = await head(s3, to);
+  const final = await head(s3, PUBLIC_BUCKET, to);
   if (!final || final.ContentLength !== length || final.Metadata?.sha256 !== sha) {
     return response(503, { error: "PUBLICATION_UNCONFIRMED" });
   }
-  await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: from }));
+  await s3.send(new DeleteObjectCommand({ Bucket: STAGING_BUCKET, Key: from }));
   return response(200, { id, url: publicUrl(id), already_published: false });
 }
 async function revoke(s3, body) {
@@ -158,12 +161,12 @@ async function revoke(s3, body) {
   if (typeof id !== "string" || !ID_RE.test(id))
     return response(400, { error: "INVALID_ID" });
   await s3.send(new DeleteObjectCommand({
-    Bucket: BUCKET, Key: "estimates/" + id + ".pdf"
+    Bucket: PUBLIC_BUCKET, Key: "estimates/" + id + ".pdf"
   }));
   await s3.send(new DeleteObjectCommand({
-    Bucket: BUCKET, Key: "staging/" + id + ".pdf"
+    Bucket: STAGING_BUCKET, Key: "staging/" + id + ".pdf"
   }));
-  if (await head(s3, "estimates/" + id + ".pdf")) {
+  if (await head(s3, PUBLIC_BUCKET, "estimates/" + id + ".pdf")) {
     return response(503, { error: "REVOCATION_UNCONFIRMED" });
   }
   return response(200, { id, revoked: true });
