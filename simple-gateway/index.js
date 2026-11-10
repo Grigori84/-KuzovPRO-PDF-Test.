@@ -6,6 +6,8 @@ const {S3Client,PutObjectCommand,GetObjectCommand,HeadObjectCommand,DeleteObject
 const {getSignedUrl}=require("@aws-sdk/s3-request-presigner");
 const {PDFDocument,ParseSpeeds}=require("pdf-lib");
 const {makeWorkflow,FlowError}=require("./workflow");
+const {credentialProvider}=require("./ephemeral");
+const ephemeralCredentials=credentialProvider();
 
 const STAGING=process.env.STAGING_BUCKET, PUBLIC=process.env.PUBLIC_BUCKET;
 const VIEWER=process.env.VIEWER_URL||
@@ -21,7 +23,6 @@ const collision=e=>e?.code==="PRECONDITION_FAILED"||
   e?.$metadata?.httpStatusCode===412||e?.$metadata?.httpStatusCode===409;
 function devices(){
   if(!STAGING||!PUBLIC||STAGING===PUBLIC||
-     !process.env.STORAGE_ACCESS_KEY_ID||!process.env.STORAGE_SECRET_ACCESS_KEY||
      !process.env.DEVICE_PUBLIC_KEYS_JSON)throw Error("CONFIG_MISSING");
   const x=JSON.parse(process.env.DEVICE_PUBLIC_KEYS_JSON);
   if(!x||typeof x!=="object"||Array.isArray(x)||!Object.keys(x).length)
@@ -169,8 +170,7 @@ module.exports.handler=async event=>{
     const s3=new S3Client({
       endpoint:"https://storage.yandexcloud.net",region:"ru-central1",
       forcePathStyle:true,requestChecksumCalculation:"WHEN_REQUIRED",
-      credentials:{accessKeyId:process.env.STORAGE_ACCESS_KEY_ID,
-        secretAccessKey:process.env.STORAGE_SECRET_ACCESS_KEY}
+      credentials:ephemeralCredentials
     });
     const storage=adapter(s3);
     if(!(await storage.reserveNonce(user.device,user.nonce)))
