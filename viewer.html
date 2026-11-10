@@ -48,7 +48,47 @@ const DEFAULT="https://disk.yandex.ru/i/fBVMdQgfw6PoMw";
 const CDN="https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/";
 const q=id=>document.getElementById(id);
 const params=new URLSearchParams(location.search);
-let pdf=null,zoom=1,working=false,pdfjs=null;
+let pdf=null,loadedUrl=null,lastSizeMiB=0,zoom=1,working=false,pdfjs=null;
+const CACHE_MINUTES=5; // Trial optimization only, not an official Yandex URL lifetime.
+function cacheKey(url){return "kpro_trial_href:"+url}
+function cachedHref(url){
+  try{
+    const x=JSON.parse(sessionStorage.getItem(cacheKey(url))||"null");
+    if(x&&typeof x.href==="string"&&x.href.startsWith("https://")&&Date.now()-x.at<CACHE_MINUTES*60000)return x.href;
+  }catch{}
+  return null;
+}
+function rememberHref(url,href){try{sessionStorage.setItem(cacheKey(url),JSON.stringify({at:Date.now(),href}))}catch{}}
+function forgetHref(url){try{sessionStorage.removeItem(cacheKey(url))}catch{}}
+function setCooldown(ms){try{sessionStorage.setItem("kpro_trial_cooldown",String(Date.now()+ms))}catch{}}
+function cooldownRemaining(){try{return Math.max(0,Number(sessionStorage.getItem("kpro_trial_cooldown")||0)-Date.now())}catch{return 0}}
+function retryWait(resp){
+  const value=resp.headers.get("Retry-After");
+  if(!value)return 5*60000;
+  const seconds=Number(value);
+  const duration=Number.isFinite(seconds)?seconds*1000:Date.parse(value)-Date.now();
+  return Number.isFinite(duration)?Math.max(60000,duration):5*60000;
+}
+function httpError(resp,place){
+  const e=new Error(place+": HTTP "+resp.status);
+  e.status=resp.status;
+  return e;
+}
+async function requestHref(url){
+  const remaining=cooldownRemaining();
+  if(remaining>0)throw new Error("Яндекс временно ограничил запросы. Повторная попытка возможна примерно через "+Math.ceil(remaining/60000)+" мин. Не обновляйте страницу многократно.");
+  const api="https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key="+encodeURIComponent(url);
+  const resp=await fetch(api,{cache:"no-store",mode:"cors"});
+  if(resp.status===429){
+    const wait=retryWait(resp);setCooldown(wait);
+    throw new Error("Яндекс.Диск вернул HTTP 429 — ограничение запросов. Не повторяйте попытку подряд. Проверить снова можно ориентировочно через "+Math.ceil(wait/60000)+" мин; точный срок Яндексом не подтверждён.");
+  }
+  if(!resp.ok)throw httpError(resp,"API Яндекс.Диска");
+  const meta=await resp.json();
+  if(typeof meta.href!=="string"||!meta.href.startsWith("https://"))throw new Error("API не вернул HTTPS-адрес PDF");
+  rememberHref(url,meta.href);
+  return meta.href;
+}
 function status(s,type="info"){q("status").textContent=s;q("status").dataset.type=type}
 function progress(p){q("bar").style.width=Math.round(p*100)+"%"}
 function validate(str){
@@ -80,7 +120,7 @@ async function render(){
 }
 async function fetchBytes(href){
   const resp=await fetch(href,{method:"GET",mode:"cors",cache:"no-store"});
-  if(!resp.ok)throw Error("Ошибка загрузки PDF: HTTP "+resp.status);
+  if(!resp.ok)throw httpError(resp,"Загрузка PDF");
   const length=Number(resp.headers.get("content-length")||0);
   if(length>40*1024*1024)throw Error("PDF больше 40 МиБ: тест отклонён");
   if(!resp.body){const b=new Uint8Array(await resp.arrayBuffer());progress(1);return b}
@@ -97,25 +137,44 @@ async function fetchBytes(href){
   progress(1);return data;
 }
 async function load(){
-  if(working)return;working=true;q("load").disabled=true;q("tools").hidden=true;q("pages").replaceChildren();pdf=null;progress(0);
+  if(working)return;
+  let url;
+  try{url=validate(q("publicUrl").value)}catch(e){status(e.message,"error");return}
+  history.replaceState(null,"",linkFor(url));
+  if(pdf&&loadedUrl===url){
+    status("Документ уже открыт: "+pdf.numPages+" страниц, "+lastSizeMiB.toFixed(2)+" МиБ. Повторный запрос к Яндекс.Диску не требуется.","ok");
+    q("pages").scrollIntoView({behavior:"smooth",block:"start"});
+    return;
+  }
+  working=true;q("load").disabled=true;q("tools").hidden=true;q("pages").replaceChildren();pdf=null;loadedUrl=null;progress(0);
   try{
-    const url=validate(q("publicUrl").value);history.replaceState(null,"",linkFor(url));
-    status("Получаю прямой адрес PDF через API Яндекса…");
-    const api="https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key="+encodeURIComponent(url);
-    const response=await fetch(api,{cache:"no-store",mode:"cors"});
-    if(!response.ok)throw Error("API Яндекс.Диска: HTTP "+response.status);
-    const meta=await response.json();
-    if(typeof meta.href!=="string"||!meta.href.startsWith("https://"))throw Error("API не вернул HTTPS-адрес PDF");
+    let href=cachedHref(url);
+    status(href?"Использую недавно полученный адрес PDF, без повторного запроса к API…":"Получаю прямой адрес PDF через API Яндекса…");
+    if(!href)href=await requestHref(url);
     status("Загружаю PDF…");
-    const bytes=await fetchBytes(meta.href);
-    if(bytes.length<5||String.fromCharCode(...bytes.slice(0,5))!=="%PDF-")throw Error("В ответе нет корректного заголовка PDF");
-    const fileSizeMiB=bytes.byteLength/1048576; // Save before PDF.js transfers buffer ownership to its worker.
+    let bytes;
+    try{bytes=await fetchBytes(href)}
+    catch(e){
+      // A short-lived direct URL can expire before the conservative trial cache.
+      if(href===cachedHref(url)&&(e.status===403||e.status===404)){
+        forgetHref(url);
+        status("Временный адрес устарел. Запрашиваю новый один раз…");
+        href=await requestHref(url);
+        bytes=await fetchBytes(href);
+      }else throw e;
+    }
+    if(bytes.length<5||String.fromCharCode(...bytes.slice(0,5))!=="%PDF-")throw Error("Полученный файл не похож на PDF");
+    const fileSizeMiB=bytes.byteLength/1048576; // Capture before PDF.js worker transfers the bytes.
     status("PDF загружен ("+fileSizeMiB.toFixed(2)+" МиБ). Отображаю страницы…");
     if(!pdfjs){pdfjs=await import(CDN+"pdf.mjs");pdfjs.GlobalWorkerOptions.workerSrc=CDN+"pdf.worker.mjs"}
     pdf=await pdfjs.getDocument({data:bytes}).promise;
     zoom=1;await render();
+    loadedUrl=url;lastSizeMiB=fileSizeMiB;
     status("Готово! Отображено "+pdf.numPages+" страниц. Размер: "+fileSizeMiB.toFixed(2)+" МиБ.","ok");
-  }catch(e){status("Не удалось открыть смету: "+(e?.message||String(e))+"\n\nЕсли Яндекс блокирует междоменные запросы или не работает сервер, нужен отдельный шлюз.","error")}
+  }catch(e){
+    const message=e?.message||String(e);
+    status("Не удалось открыть смету: "+message+"\n\nЭто эксперимент. Ошибка лимита 429 не означает повреждение PDF, но пока не позволяет считать сервис надёжным для клиентов.","error");
+  }
   finally{working=false;q("load").disabled=false}
 }
 q("load").addEventListener("click",load);
