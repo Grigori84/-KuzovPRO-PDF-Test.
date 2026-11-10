@@ -33,7 +33,7 @@ function auth(event,raw,keys){
     .map(([k,v])=>[k.toLowerCase(),String(v)]));
   const device=h["x-kpro-device"],time=h["x-kpro-time"];
   const nonce=h["x-kpro-nonce"],sig=h["x-kpro-signature"];
-  if(!device||!Object.hasOwn(keys,device)||!/^\d{10}$/.test(time||"")||
+  if(!/^[A-Za-z0-9_-]{1,40}$/.test(device||"")||!Object.hasOwn(keys,device)||!/^\d{10}$/.test(time||"")||
      !/^[a-f0-9]{32}$/.test(nonce||"")||
      !/^[A-Za-z0-9+/]+={0,2}$/.test(sig||"")||
      Math.abs(Date.now()/1000-Number(time))>90)return null;
