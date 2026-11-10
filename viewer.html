@@ -86,9 +86,9 @@ async function requestHref(url){
     try{
       const details=await resp.json();
       const value=details?.description||details?.message||details?.error||"";
-      if(typeof value==="string"&&value.length)reason="\\nОтвет API: "+value.slice(0,250);
+      if(typeof value==="string"&&value.length)reason="\nОтвет API: "+value.slice(0,250);
     }catch{}
-    throw new Error("API Яндекс.Диска вернул HTTP 429 — слишком много запросов или достигнут другой лимит.\\n"+
+    throw new Error("API Яндекс.Диска вернул HTTP 429 — слишком много запросов или достигнут другой лимит.\n"+
       (retryAfter?"Сервер указал Retry-After. ":"Сервер не сообщил доступное браузеру время восстановления. ")+
       "Наш сайт включил защитную паузу "+Math.ceil(wait/60000)+" мин; она НЕ гарантирует, что ограничение Яндекса закончится."+reason);
   }
