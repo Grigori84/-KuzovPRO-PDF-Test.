@@ -97,17 +97,15 @@ test("revoke cannot overtake an in-flight publication",async()=>{
   assert.equal((await flow.revoke({id},"phone1")).revoked,true);
   assert.equal(store.published.size,0);
 });
-test("recover after public write succeeds but function loses response",async()=>{
+test("lost response with public object remains blocked until safe recovery",async()=>{
   const {store,flow,begin,bytes}=fixture();const id=await begin();
   const original=store.putPublishedOnce;
-  store.putPublishedOnce=async(...args)=>{
-    await original(...args);throw new Error("lost response");
-  };
-  await assert.rejects(flow.publish({id,bytes:bytes.length,sha256:HASH},"phone1"));
+  store.putPublishedOnce=async(...args)=>{await original(...args);throw new Error("lost response");};
+  const arg={id,bytes:bytes.length,sha256:HASH};
+  await assert.rejects(flow.publish(arg,"phone1"));
+  await mustReject(flow.publish(arg,"phone1"),409,"PUBLICATION_IN_PROGRESS");
+  await mustReject(flow.revoke({id},"phone1"),409,"PUBLISHING_IN_PROGRESS_RETRY");
   assert.equal(store.state.get(id).value.phase,"publishing");
-  const result=await flow.publish({id,bytes:bytes.length,sha256:HASH},"phone1");
-  assert.equal(result.already_published,true);
-  assert.equal(store.state.get(id).value.phase,"published");
 });
 test("failed publication without public object stays blocked safely",async()=>{
   const {store,flow,begin,bytes}=fixture();const id=await begin();
@@ -141,3 +139,4 @@ test("reject wrong hash, foreign device and oversized uploads",async()=>{
   await mustReject(flow.publish({id,bytes:bytes.length,sha256:HASH},"phone1"),
     422,"UPLOADED_FILE_MISMATCH");
 });
+
