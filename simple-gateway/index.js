@@ -118,6 +118,7 @@ function adapter(s3){
       const key="staging/"+id+".pdf",h=await head(STAGING,key);
       if(!h)return null;
       if(h.ContentLength>limit)throw new FlowError(413,"TOO_LARGE");
+      if(!h.ETag)throw Error("MISSING_STAGING_ETAG");
       const d=await read(STAGING,key,limit,h.ETag);
       return d?{bytes:d.body,contentType:d.contentType}:null;
     },
@@ -140,8 +141,14 @@ function adapter(s3){
       });
     },
     async headPublished(id){
-      const v=await head(PUBLIC,"estimates/"+id+".pdf");
-      return v?{bytes:v.ContentLength,sha256:v.Metadata?.sha256||""}:null;
+      const key="estimates/"+id+".pdf";
+      const v=await head(PUBLIC,key);
+      if(!v)return null;
+      if(!v.ETag || !Number.isSafeInteger(v.ContentLength) || v.ContentLength > 10*1024*1024)
+        throw Error("INVALID_PUBLISHED_OBJECT");
+      const data=await read(PUBLIC,key,10*1024*1024,v.ETag);
+      if(!data || data.body.length!==v.ContentLength)throw Error("PUBLICATION_UNCONFIRMED");
+      return {bytes:data.body.length,sha256:sha(data.body)};
     },
     async removePublished(id){await remove(PUBLIC,"estimates/"+id+".pdf");},
     async removeStaging(id){await remove(STAGING,"staging/"+id+".pdf");}
@@ -188,3 +195,4 @@ module.exports.handler=async event=>{
 
 // Internal unit-test seam only; not an HTTP route.
 module.exports.__testing = {auth,adapter};
+
