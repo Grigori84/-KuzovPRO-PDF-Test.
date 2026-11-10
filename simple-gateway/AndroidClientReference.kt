@@ -95,7 +95,7 @@ class PdfGatewayClient(private val endpoint: String, private val deviceId: Strin
     // Save Publication.id and the immutable estimate-version ID on success.
     // Do not send an SMS until this function RETURNS successfully.
     fun publish(pdf: ByteArray): Publication {
-        require(pdf.size in 10..(32 * 1024 * 1024))
+        require(pdf.size in 10..(10 * 1024 * 1024))
         require(String(pdf.copyOfRange(0, 5), StandardCharsets.US_ASCII) == "%PDF-")
         val md5 = Base64.encodeToString(hash("MD5", pdf), Base64.NO_WRAP)
         val sha = hex(hash("SHA-256", pdf))
