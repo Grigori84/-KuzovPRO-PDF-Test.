@@ -32,7 +32,7 @@ def pdf():
 
 class Tests(unittest.TestCase):
     def setUp(self):
-        self.s=Storage(); self.p=Publisher(self.s,'https://viewer.invalid/?file='); self.id='a'*64; self.key='staging/'+'b'*64+'.pdf'; self.doc=pdf(); self.exp=datetime.now(timezone.utc)+timedelta(minutes=5); self.digest=hashlib.sha256(self.doc).hexdigest()
+        self.s=Storage(); self.p=Publisher(self.s,'https://grigori84.github.io/-KuzovPRO-PDF-Test./client.html'); self.id='a'*64; self.key='staging/'+'b'*64+'.pdf'; self.doc=pdf(); self.exp=datetime.now(timezone.utc)+timedelta(minutes=5); self.digest=hashlib.sha256(self.doc).hexdigest()
         self.s.data['staging',self.key]=self.doc
         self.p.register(self.id,self.key,len(self.doc),self.digest,self.exp)
     def test_publish_repeat_and_revoke(self):
@@ -67,6 +67,39 @@ class Tests(unittest.TestCase):
         for t in threads: t.start()
         for t in threads: t.join()
         self.assertEqual(len(results),2); self.assertEqual(results[0],results[1]); self.assertEqual(sum(x[0]=='public' for x in self.s.data),1)
+    def test_viewer_fragment_contract(self):
+        import re
+        link = self.p.publish(self.id)
+        self.assertRegex(link, r"/client\.html#id=[0-9a-f]{32}$")
+        token = link.split("#id=")[1]
+        self.assertIn(('public','estimates/'+token+'.pdf'),self.s.data)
+    def test_generated_link_runs_real_viewer_parser(self):
+        import pathlib, subprocess
+        link=self.p.publish(self.id)
+        root=next(p for p in pathlib.Path(__file__).resolve().parents if (p/'client.html').exists())
+        js = """const fs=require('fs'),vm=require('vm'); const html=fs.readFileSync(process.argv[1],'utf8'); const start=html.indexOf('function urlFromQuery(){'); const end=html.indexOf('async function fetchFile',start); if(start<0||end<0)throw Error('viewer parser not found'); const ctx={location:{hash:new URL(process.argv[2]).hash},TEST_URL:'demo'}; vm.createContext(ctx); vm.runInContext(html.slice(start,end),ctx); console.log(ctx.urlFromQuery());"""
+        target=subprocess.check_output(['node','-e',js,str(root/'client.html'),link],text=True).strip()
+        self.assertEqual(target,'https://storage.yandexcloud.net/kuzovpro-pdf-test-84/'+self.p.operations[self.id].public_key)
+    def test_restart_with_restored_state_and_revocation(self):
+        import copy
+        link=self.p.publish(self.id)
+        restored=Publisher(self.s,self.p.viewer_url,copy.deepcopy(self.p.operations))
+        self.assertEqual(restored.publish(self.id),link)
+        restored.revoke(self.id)
+        restored2=Publisher(self.s,self.p.viewer_url,copy.deepcopy(restored.operations))
+        with self.assertRaises(Rejected): restored2.publish(self.id)
+    def test_failure_after_write_recovery(self):
+        original=self.s.get
+        def fail_once(b,k,limit):
+            if b == 'public':
+                self.s.get=original
+                raise OSError('simulated read failure')
+            return original(b,k,limit)
+        self.s.get=fail_once
+        with self.assertRaises(OSError): self.p.publish(self.id)
+        self.assertEqual(sum(x[0]=='public' for x in self.s.data),1)
+        self.p.publish(self.id)
+        self.assertEqual(sum(x[0]=='public' for x in self.s.data),1)
     def test_conflicting_existing_public(self):
         self.s.data['public',self.p.operations[self.id].public_key]=b'wrong'
         with self.assertRaises(Rejected): self.p.publish(self.id)
