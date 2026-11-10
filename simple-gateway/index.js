@@ -25,6 +25,7 @@ const isMissing = e => e?.name === "NotFound" ||
   e?.name === "NoSuchKey" || e?.$metadata?.httpStatusCode === 404;
 
 function config() {
+  if (process.env.GATEWAY_ENABLED !== "true") throw Error("GATEWAY_DISABLED");
   if (!BUCKET || !process.env.STORAGE_ACCESS_KEY_ID ||
       !process.env.STORAGE_SECRET_ACCESS_KEY ||
       !process.env.DEVICE_PUBLIC_KEYS_JSON) {
@@ -141,7 +142,8 @@ async function publish(s3, body) {
     Bucket: BUCKET, Key: to,
     CopySource: BUCKET + "/" + from,
     CopySourceIfMatch: info.ETag,
-    ContentType: "application/pdf", MetadataDirective: "REPLACE",
+    ContentType: "application/pdf", CacheControl: "no-store, max-age=0",
+    MetadataDirective: "REPLACE",
     Metadata: { sha256: sha }
   }));
   const final = await head(s3, to);
