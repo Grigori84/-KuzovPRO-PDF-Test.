@@ -185,3 +185,6 @@ module.exports.handler=async event=>{
     return respond(503,{error:"GATEWAY_UNAVAILABLE"});
   }
 };
+
+// Internal unit-test seam only; not an HTTP route.
+module.exports.__testing = {auth,adapter};
