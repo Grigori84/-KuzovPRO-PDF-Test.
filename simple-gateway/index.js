@@ -191,8 +191,10 @@ module.exports.handler = async event => {
       return response(400, { error: "INVALID_JSON" });
     const s3 = s3Client();
     if (body.operation === "begin") return await begin(s3, body);
-    if (body.operation === "publish") return await publish(s3, body);
-    if (body.operation === "revoke") return await revoke(s3, body);
+    // Work audit: no publish/revoke until replay, revoke and destination
+    // immutability protections are demonstrated in integration tests.
+    if (body.operation === "publish" || body.operation === "revoke")
+      return response(501, { error: "PUBLICATION_NOT_ENABLED" });
     return response(400, { error: "UNKNOWN_OPERATION" });
   } catch (e) {
     // Never log signed upload URLs, request bodies, credentials, or client data.
