@@ -23,8 +23,8 @@ button.secondary{background:#37414b}button:disabled{opacity:.55;cursor:default}
 #status[data-type="ok"]{border-color:#64ae7a}#status[data-type="error"]{border-color:#d16d75}
 #progress{height:5px;background:#303a43;border-radius:8px;overflow:hidden;margin:12px 0}
 #bar{height:100%;width:0;background:#b96771;transition:width .15s}
-#pages{display:grid;gap:14px;margin:10px auto}.page{background:#fff;color:#555;border-radius:7px;box-shadow:0 4px 14px #0006;padding:6px;text-align:center}
-.page canvas{width:100%;height:auto;display:block}.page .caption{padding:6px;color:#464646;font-size:12px}
+#pages{display:grid;gap:14px;margin:10px auto;overflow-x:auto;justify-items:start}.page{background:#fff;color:#555;border-radius:7px;box-shadow:0 4px 14px #0006;padding:6px;text-align:center;width:max-content}
+.page canvas{width:auto;max-width:none;height:auto;display:block}.page .caption{padding:6px;color:#464646;font-size:12px}
 .toolbar{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin:0 0 11px}
 .toolbar button{padding:9px 13px;background:#34414a}.toolbar span{font-variant-numeric:tabular-nums}
 a{color:#cadcf9}footer{margin-top:25px;color:#8f9ba4;font-size:12px;line-height:1.5}
@@ -48,7 +48,7 @@ const DEFAULT="https://disk.yandex.ru/i/fBVMdQgfw6PoMw";
 const CDN="https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/";
 const q=id=>document.getElementById(id);
 const params=new URLSearchParams(location.search);
-let pdf=null,bytes=null,zoom=1,working=false,pdfjs=null;
+let pdf=null,zoom=1,working=false,pdfjs=null;
 function status(s,type="info"){q("status").textContent=s;q("status").dataset.type=type}
 function progress(p){q("bar").style.width=Math.round(p*100)+"%"}
 function validate(str){
@@ -107,13 +107,14 @@ async function load(){
     const meta=await response.json();
     if(typeof meta.href!=="string"||!meta.href.startsWith("https://"))throw Error("API не вернул HTTPS-адрес PDF");
     status("Загружаю PDF…");
-    bytes=await fetchBytes(meta.href);
+    const bytes=await fetchBytes(meta.href);
     if(bytes.length<5||String.fromCharCode(...bytes.slice(0,5))!=="%PDF-")throw Error("В ответе нет корректного заголовка PDF");
-    status("PDF загружен ("+(bytes.length/1048576).toFixed(2)+" МиБ). Отображаю страницы…");
+    const fileSizeMiB=bytes.byteLength/1048576; // Save before PDF.js transfers buffer ownership to its worker.
+    status("PDF загружен ("+fileSizeMiB.toFixed(2)+" МиБ). Отображаю страницы…");
     if(!pdfjs){pdfjs=await import(CDN+"pdf.mjs");pdfjs.GlobalWorkerOptions.workerSrc=CDN+"pdf.worker.mjs"}
     pdf=await pdfjs.getDocument({data:bytes}).promise;
     zoom=1;await render();
-    status("Готово! Отображено "+pdf.numPages+" страниц. Размер: "+(bytes.length/1048576).toFixed(2)+" МиБ.","ok");
+    status("Готово! Отображено "+pdf.numPages+" страниц. Размер: "+fileSizeMiB.toFixed(2)+" МиБ.","ok");
   }catch(e){status("Не удалось открыть смету: "+(e?.message||String(e))+"\n\nЕсли Яндекс блокирует междоменные запросы или не работает сервер, нужен отдельный шлюз.","error")}
   finally{working=false;q("load").disabled=false}
 }
