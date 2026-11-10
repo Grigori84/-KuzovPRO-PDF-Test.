@@ -1,0 +1,99 @@
+<!doctype html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer"><meta name="robots" content="noindex,nofollow"><title>ЭКСПЕРТ — большая тестовая PDF-смета</title>
+<style>
+:root{color-scheme:dark;background:#111417;color:#f5f6f7;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{padding:18px 15px 40px;margin:auto;max-width:700px}
+h1{margin:0;font-size:24px}.sub{font-size:14px;color:#9eaab4;margin:6px 0 25px}
+.panel{background:#1d2429;border:1px solid #364149;border-radius:15px;padding:20px;margin:15px 0}
+h2{font-size:19px;margin:0 0 10px}p,li{font-size:14px;color:#b9c3ca;line-height:1.6}
+button,a.action{display:inline-block;text-align:center;background:#963f49;border:0;border-radius:11px;font-size:15px;font-weight:650;color:#fff;text-decoration:none;padding:14px 18px;cursor:pointer}
+button:disabled{opacity:.5}a.action{background:#3d5c71}#download[hidden]{display:none}
+#status{white-space:pre-wrap;color:#c8d3d9;background:#121a1f;border-radius:10px;padding:13px;font-size:13px}
+ol{padding-left:20px}a{color:#bcd8ff}.mark{display:inline-block;border-left:4px solid #a34a51;padding-left:12px}
+</style></head><body>
+<div class="mark"><h1>ЭКСПЕРТ</h1><div class="sub">Большой PDF для проверки КузовPRO</div></div>
+<div class="panel"><h2>Создать тестовую смету</h2>
+<p>Страница создаёт на твоём телефоне синтетический многостраничный PDF с изображениями и русским текстом. Реальных данных клиентов нет. Это проверка размеров и декодирования, а не качества настоящих фотографий.</p>
+<button id="make">Создать PDF (примерно 5–20 МБ)</button>
+<a class="action" id="download" hidden>Скачать PDF</a>
+<p id="status" role="status">Нажми кнопку для создания файла.</p>
+</div>
+<div class="panel"><h2>Что делать после скачивания</h2>
+<ol><li>Загрузи созданный PDF на Яндекс.Диск.</li><li>Нажми «Поделиться» и скопируй публичную ссылку.</li><li>Открой <a href="./viewer.html">наш просмотрщик PDF.js</a>, вставь эту ссылку и нажми «Открыть PDF».</li><li>Пришли результат проверки: открылись ли все страницы и какой размер файла показан.</li></ol>
+<p>Если создание большого файла тормозит телефон, не повторяй многократно — можно использовать другой тестовый PDF без данных клиентов.</p></div>
+<script>
+let handle=null;
+const encoder=new TextEncoder(), q=id=>document.getElementById(id);
+function message(s){q("status").textContent=s}
+function jpegFor(i){
+  return new Promise((resolve,reject)=>{
+    const canvas=document.createElement("canvas");canvas.width=1600;canvas.height=1200;
+    const ctx=canvas.getContext("2d",{alpha:false});
+    if(!ctx){reject(Error("Canvas 2D недоступен"));return}
+    const data=ctx.createImageData(canvas.width,canvas.height),bytes=data.data;
+    let seed=(0x9e3779b9*(i+1))>>>0;
+    for(let y=0;y<1200;y++)for(let x=0;x<1600;x++){
+      seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;
+      const n=seed&255,o=(y*1600+x)*4;
+      bytes[o]=Math.min(255,45+x*.08+n*.50);
+      bytes[o+1]=Math.min(255,52+y*.07+n*.47);
+      bytes[o+2]=Math.min(255,66+(x+y)*.035+n*.48);
+      bytes[o+3]=255;
+    }
+    ctx.putImageData(data,0,0);
+    ctx.fillStyle="#13212cd9";ctx.fillRect(65,72,1470,230);
+    ctx.fillStyle="#ffffff";ctx.font="bold 76px sans-serif";ctx.fillText("ЭКСПЕРТ — ТЕСТ PDF",100,166);
+    ctx.font="42px sans-serif";ctx.fillText("Страница "+i+" из 5 · Проверка фото и русского текста",100,250);
+    ctx.fillStyle="#ffffffdf";ctx.fillRect(80,850,1440,240);
+    ctx.fillStyle="#14212a";ctx.font="bold 52px sans-serif";
+    ctx.fillText("Демонстрационная смета",120,940);
+    ctx.font="35px sans-serif";ctx.fillText("Без данных клиентов. Проверка отображения.",120,1014);
+    canvas.toBlob(async blob=>{
+      try{if(!blob)throw Error("Не удалось создать JPEG");resolve(new Uint8Array(await blob.arrayBuffer()))}
+      catch(e){reject(e)}
+    },"image/jpeg",.96);
+  });
+}
+async function build(){
+  q("make").disabled=true;q("download").hidden=true;
+  if(handle){URL.revokeObjectURL(handle);handle=null}
+  try{
+    const totalPages=5,jpegs=[];
+    for(let n=1;n<=totalPages;n++){
+      message("Создаю изображение "+n+" из "+totalPages+"…");
+      await new Promise(requestAnimationFrame);
+      jpegs.push(await jpegFor(n));
+    }
+    message("Упаковываю "+totalPages+" страниц в PDF…");
+    await new Promise(requestAnimationFrame);
+    const segments=[];let offset=0;const offsets=[];
+    function raw(buf){segments.push(buf);offset+=buf.length}
+    function txt(s){raw(encoder.encode(s))}
+    function start(n){offsets[n]=offset;txt(n+" 0 obj\n")}
+    function end(){txt("\nendobj\n")}
+    const maxId=2+3*totalPages;
+    txt("%PDF-1.4\n%KUZOVPRO\n");
+    start(1);txt("<< /Type /Catalog /Pages 2 0 R >>");end();
+    start(2);
+    txt("<< /Type /Pages /Kids ["+Array.from({length:totalPages},(_,i)=>(3+i*3)+" 0 R").join(" ")+"] /Count "+totalPages+" >>");end();
+    for(let i=0;i<totalPages;i++){
+      const page=3+i*3,image=page+1,contents=page+2,jpeg=jpegs[i];
+      start(page);txt("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /XObject << /Im0 "+image+" 0 R >> >> /Contents "+contents+" 0 R >>");end();
+      start(image);
+      txt("<< /Type /XObject /Subtype /Image /Width 1600 /Height 1200 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length "+jpeg.byteLength+" >>\nstream\n");
+      raw(jpeg);txt("\nendstream");end();
+      const drawing="q\n500 0 0 375 47 260 cm\n/Im0 Do\nQ\n";
+      start(contents);txt("<< /Length "+encoder.encode(drawing).length+" >>\nstream\n"+drawing+"endstream");end();
+    }
+    const xrefStart=offset;
+    txt("xref\n0 "+(maxId+1)+"\n0000000000 65535 f \n");
+    for(let n=1;n<=maxId;n++)txt(String(offsets[n]).padStart(10,"0")+" 00000 n \n");
+    txt("trailer\n<< /Size "+(maxId+1)+" /Root 1 0 R >>\nstartxref\n"+xrefStart+"\n%%EOF\n");
+    const blob=new Blob(segments,{type:"application/pdf"});
+    handle=URL.createObjectURL(blob);
+    const a=q("download");a.href=handle;a.download="KuzovPRO_large_test_"+(blob.size/1048576).toFixed(1)+"MB.pdf";a.hidden=false;
+    message("Готово: "+(blob.size/1048576).toFixed(2)+" МиБ, "+totalPages+" страниц. Нажми «Скачать PDF», затем загрузи его на Яндекс.Диск.");
+  }catch(e){message("Не удалось создать PDF: "+(e?.message||String(e)))}
+  finally{q("make").disabled=false}
+}
+q("make").addEventListener("click",build);
+</script></body></html>
