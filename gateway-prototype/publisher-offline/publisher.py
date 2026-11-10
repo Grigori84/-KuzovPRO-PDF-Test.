@@ -6,7 +6,6 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import RLock
-from urllib.parse import quote
 from pypdf import PdfReader
 
 MAX_BYTES = 10 * 1024 * 1024
@@ -28,9 +27,9 @@ class Operation:
 
 class Publisher:
     """In-memory lock/registry is for tests only; it is NOT distributed state."""
-    def __init__(self, storage, viewer_url):
+    def __init__(self, storage, viewer_url, state=None):
         self.storage, self.viewer_url = storage, viewer_url
-        self.operations = {}
+        self.operations = {} if state is None else state
         self.lock = RLock()
 
     def register(self, operation_id, source, size, digest, expires):
@@ -44,7 +43,7 @@ class Publisher:
             if old:
                 if (old.source,old.size,old.digest,old.expires) != (source,size,digest,expires): raise Conflict('different request')
                 return
-            self.operations[operation_id] = Operation(source,size,digest,expires,'estimates/'+secrets.token_hex(32)+'.pdf')
+            self.operations[operation_id] = Operation(source,size,digest,expires,'estimates/'+secrets.token_hex(16)+'.pdf')
 
     def publish(self, operation_id):
         with self.lock:
@@ -83,7 +82,7 @@ class Publisher:
         except Exception as exc: raise Rejected('pdf') from exc
 
     def _url(self, op):
-        return self.viewer_url + quote(op.public_key, safe='/')
+        return self.viewer_url + '#id=' + op.public_key[len('estimates/'):-len('.pdf')]
 
     def revoke(self, operation_id):
         with self.lock:
