@@ -92,23 +92,35 @@ class PdfGatewayClient(private val endpoint: String, private val deviceId: Strin
 
     data class Publication(val id: String, val url: String)
 
-    // Save Publication.id and the immutable estimate-version ID on success.
-    // Do not send an SMS until this function RETURNS successfully.
-    fun publish(pdf: ByteArray): Publication {
-        require(pdf.size in 10..(10 * 1024 * 1024))
+    // persistIssued MUST complete a durable local write before returning.
+    // The id belongs to this immutable PDF version; never reuse it for new bytes.
+    // Only launch SMS intent after publish returns with the confirmed URL.
+    fun publish(pdf: ByteArray, persistIssued: (String) -> Unit): Publication {
+        require(pdf.size in 20..(10 * 1024 * 1024))
         require(String(pdf.copyOfRange(0, 5), StandardCharsets.US_ASCII) == "%PDF-")
         val md5 = Base64.encodeToString(hash("MD5", pdf), Base64.NO_WRAP)
-        val sha = hex(hash("SHA-256", pdf))
         val ticket = post(JSONObject().put("operation", "begin")
             .put("bytes", pdf.size).put("md5_base64", md5))
         val id = ticket.getString("id")
+        persistIssued(id) // must finish BEFORE uploading any bytes
         directPut(ticket.getString("upload_url"), ticket.getJSONObject("headers"), pdf)
+        return finishPublication(id, pdf)
+    }
+
+    // Recovery when the upload may already have succeeded but the phone
+    // missed the publish response. If staging was never fully uploaded, a
+    // new begin ticket must be issued; do not reuse an expired upload URL.
+    fun finishPublication(id: String, pdf: ByteArray): Publication {
+        require(id.matches(Regex("[0-9a-f]{32}")))
+        require(pdf.size in 20..(10 * 1024 * 1024))
+        val sha = hex(hash("SHA-256", pdf))
         val final = post(JSONObject().put("operation", "publish")
             .put("id", id).put("bytes", pdf.size).put("sha256", sha))
         return Publication(id, final.getString("url"))
     }
 
-    // Call when revoking a link or deleting its order; surface failures.
+    // A 409 during an in-flight publication is NOT a confirmed revoke.
+    // Retry after publication settles; do not claim success until HTTP 200.
     fun revoke(id: String) {
         require(id.matches(Regex("[0-9a-f]{32}")))
         check(post(JSONObject().put("operation", "revoke")
