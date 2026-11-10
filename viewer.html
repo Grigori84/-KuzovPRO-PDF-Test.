@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex,nofollow">
+<title>ЭКСПЕРТ — просмотр сметы</title>
+<style>
+:root{color-scheme:dark;background:#101316;color:#f5f6f7;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{margin:0;padding:0 12px 40px}
+header{background:#1b2025;border-bottom:1px solid #343a40;margin:0 -12px 15px;padding:15px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.brand{display:flex;align-items:center;gap:11px}.line{height:33px;width:4px;background:#9a414a;border-radius:2px}
+h1{margin:0;font-size:23px;letter-spacing:.01em}header small{font-size:11px;color:#abb3bb}
+main{max-width:820px;margin:auto}h2{font-size:17px;margin:0 0 9px}
+.panel{background:#1c2227;border:1px solid #353e46;border-radius:15px;padding:15px;margin:0 0 14px}
+.hint{font-size:13px;color:#adb5bb;line-height:1.5;margin:6px 0 12px}
+label{display:block;font-size:13px;color:#c0c8cf;margin-bottom:6px}
+input{background:#11171b;color:white;border:1px solid #49535d;border-radius:10px;padding:12px 11px;min-width:0;width:100%;font-size:14px}
+button{border:0;border-radius:10px;padding:12px 15px;font-weight:650;font-size:14px;color:white;background:#973f49;cursor:pointer}
+button.secondary{background:#37414b}button:disabled{opacity:.55;cursor:default}
+.actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:11px}.actions button{flex:1 1 auto}
+#status{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.5;border-left:3px solid #4d6472;padding:10px 12px;background:#12181d;border-radius:6px;color:#d0d9df}
+#status[data-type="ok"]{border-color:#64ae7a}#status[data-type="error"]{border-color:#d16d75}
+#progress{height:5px;background:#303a43;border-radius:8px;overflow:hidden;margin:12px 0}
+#bar{height:100%;width:0;background:#b96771;transition:width .15s}
+#pages{display:grid;gap:14px;margin:10px auto}.page{background:#fff;color:#555;border-radius:7px;box-shadow:0 4px 14px #0006;padding:6px;text-align:center}
+.page canvas{width:100%;height:auto;display:block}.page .caption{padding:6px;color:#464646;font-size:12px}
+.toolbar{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin:0 0 11px}
+.toolbar button{padding:9px 13px;background:#34414a}.toolbar span{font-variant-numeric:tabular-nums}
+a{color:#cadcf9}footer{margin-top:25px;color:#8f9ba4;font-size:12px;line-height:1.5}
+</style></head><body>
+<header><div class="brand"><span class="line"></span><div><h1>ЭКСПЕРТ</h1><small>Кузовной сервис · просмотр сметы</small></div></div><a href="./">Диагностика</a></header>
+<main>
+<div class="panel">
+<h2>Открыть PDF-смету</h2>
+<p class="hint">Тестовая версия. Можно вставить любую публичную ссылку на отдельный PDF с Яндекс.Диска и получить отдельную ссылку для просмотра.</p>
+<label for="publicUrl">Публичная ссылка Яндекс.Диска</label>
+<input id="publicUrl" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" value="https://disk.yandex.ru/i/fBVMdQgfw6PoMw">
+<div class="actions"><button id="load">Открыть PDF</button><button id="copy" class="secondary">Скопировать ссылку для просмотра</button></div>
+</div>
+<div class="panel"><h2>Состояние</h2><div id="status" role="status" aria-live="polite">Готов к проверке</div><div id="progress" aria-hidden="true"><div id="bar"></div></div></div>
+<div id="tools" class="toolbar" hidden><button id="minus" aria-label="Уменьшить">−</button><span id="zoomText">100%</span><button id="plus" aria-label="Увеличить">+</button><span id="count"></span></div>
+<div id="pages"></div>
+<footer>Это технологический прототип, не готовый сервис для клиентских смет. PDF загружается из Яндекс.Диска прямо в браузер; файл не сохраняется в этом репозитории. Ссылка на документ остаётся публичным ключом доступа. Не размещайте реальные клиентские документы до проверки безопасности, сроков доступа и доступности сервиса.</footer>
+</main>
+<script type="module">
+const DEFAULT="https://disk.yandex.ru/i/fBVMdQgfw6PoMw";
+const CDN="https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/";
+const q=id=>document.getElementById(id);
+const params=new URLSearchParams(location.search);
+let pdf=null,bytes=null,zoom=1,working=false,pdfjs=null;
+function status(s,type="info"){q("status").textContent=s;q("status").dataset.type=type}
+function progress(p){q("bar").style.width=Math.round(p*100)+"%"}
+function validate(str){
+  let u;try{u=new URL(str.trim())}catch{throw Error("Некорректный адрес")}
+  if(u.protocol!=="https:"||u.hostname!=="disk.yandex.ru"||u.port||!/^\/(i|d)\/[A-Za-z0-9_-]+\/?$/.test(u.pathname)||u.search||u.hash)throw Error("Нужна обычная публичная ссылка вида https://disk.yandex.ru/i/...");
+  return u.href;
+}
+function linkFor(u){const output=new URL(location.href);output.search="?src="+encodeURIComponent(u);output.hash="";return output.href}
+async function render(){
+  if(!pdf)return;
+  q("pages").replaceChildren();q("tools").hidden=false;
+  q("zoomText").textContent=Math.round(zoom*100)+"%";
+  q("count").textContent=pdf.numPages+" стр.";
+  for(let n=1;n<=pdf.numPages;n++){
+    const page=await pdf.getPage(n);
+    const base=page.getViewport({scale:1});
+    const maxWidth=Math.max(260,Math.min(780,q("pages").clientWidth-12));
+    const view=page.getViewport({scale:zoom*maxWidth/base.width});
+    const dpr=Math.min(devicePixelRatio||1,1.7);
+    const canvas=document.createElement("canvas");
+    canvas.width=Math.round(view.width*dpr);canvas.height=Math.round(view.height*dpr);
+    const ctx=canvas.getContext("2d",{alpha:false});
+    if(!ctx)throw Error("Не удалось открыть Canvas");
+    const item=document.createElement("div");item.className="page";
+    const cap=document.createElement("div");cap.className="caption";cap.textContent="Страница "+n+" из "+pdf.numPages;
+    item.append(canvas,cap);q("pages").append(item);
+    await page.render({canvas,canvasContext:ctx,viewport:view,transform:[dpr,0,0,dpr,0,0]}).promise;
+  }
+}
+async function fetchBytes(href){
+  const resp=await fetch(href,{method:"GET",mode:"cors",cache:"no-store"});
+  if(!resp.ok)throw Error("Ошибка загрузки PDF: HTTP "+resp.status);
+  const length=Number(resp.headers.get("content-length")||0);
+  if(length>40*1024*1024)throw Error("PDF больше 40 МиБ: тест отклонён");
+  if(!resp.body){const b=new Uint8Array(await resp.arrayBuffer());progress(1);return b}
+  const reader=resp.body.getReader();let total=0;const chunks=[];
+  while(true){
+    const {done,value}=await reader.read();if(done)break;
+    total+=value.byteLength;
+    if(total>40*1024*1024){await reader.cancel();throw Error("PDF больше 40 МиБ: тест отклонён")}
+    chunks.push(value);if(length){progress(Math.min(.98,total/length));status("Загружено "+(total/1048576).toFixed(1)+" из "+(length/1048576).toFixed(1)+" МиБ…")}
+    else status("Загружено "+(total/1048576).toFixed(1)+" МиБ…");
+  }
+  const data=new Uint8Array(total);let at=0;
+  for(const c of chunks){data.set(c,at);at+=c.byteLength}
+  progress(1);return data;
+}
+async function load(){
+  if(working)return;working=true;q("load").disabled=true;q("tools").hidden=true;q("pages").replaceChildren();pdf=null;progress(0);
+  try{
+    const url=validate(q("publicUrl").value);history.replaceState(null,"",linkFor(url));
+    status("Получаю прямой адрес PDF через API Яндекса…");
+    const api="https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key="+encodeURIComponent(url);
+    const response=await fetch(api,{cache:"no-store",mode:"cors"});
+    if(!response.ok)throw Error("API Яндекс.Диска: HTTP "+response.status);
+    const meta=await response.json();
+    if(typeof meta.href!=="string"||!meta.href.startsWith("https://"))throw Error("API не вернул HTTPS-адрес PDF");
+    status("Загружаю PDF…");
+    bytes=await fetchBytes(meta.href);
+    if(bytes.length<5||String.fromCharCode(...bytes.slice(0,5))!=="%PDF-")throw Error("В ответе нет корректного заголовка PDF");
+    status("PDF загружен ("+(bytes.length/1048576).toFixed(2)+" МиБ). Отображаю страницы…");
+    if(!pdfjs){pdfjs=await import(CDN+"pdf.mjs");pdfjs.GlobalWorkerOptions.workerSrc=CDN+"pdf.worker.mjs"}
+    pdf=await pdfjs.getDocument({data:bytes}).promise;
+    zoom=1;await render();
+    status("Готово! Отображено "+pdf.numPages+" страниц. Размер: "+(bytes.length/1048576).toFixed(2)+" МиБ.","ok");
+  }catch(e){status("Не удалось открыть смету: "+(e?.message||String(e))+"\n\nЕсли Яндекс блокирует междоменные запросы или не работает сервер, нужен отдельный шлюз.","error")}
+  finally{working=false;q("load").disabled=false}
+}
+q("load").addEventListener("click",load);
+q("copy").addEventListener("click",async()=>{
+  try{
+    const u=validate(q("publicUrl").value);const link=linkFor(u);
+    await navigator.clipboard.writeText(link);
+    status("Ссылка на просмотр скопирована. Это открытая ссылка для тех, кому вы её отправите.","ok");
+  }catch(e){status("Не удалось скопировать: "+(e?.message||String(e)),"error")}
+});
+q("plus").addEventListener("click",async()=>{if(working||!pdf||zoom>=1.8)return;working=true;zoom=Math.min(1.8,Math.round((zoom+.2)*10)/10);try{await render()}finally{working=false}});
+q("minus").addEventListener("click",async()=>{if(working||!pdf||zoom<=.6)return;working=true;zoom=Math.max(.6,Math.round((zoom-.2)*10)/10);try{await render()}finally{working=false}});
+const initial=params.get("src");
+if(initial){q("publicUrl").value=initial}
+else{q("publicUrl").value=DEFAULT}
+load();
+</script></body></html>
