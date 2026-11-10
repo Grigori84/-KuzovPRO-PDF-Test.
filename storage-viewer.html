@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer"><meta name="robots" content="noindex,nofollow">
+<title>ЭКСПЕРТ — Object Storage / PDF.js</title>
+<style>
+:root{color-scheme:dark;background:#111417;color:#f4f5f6;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{margin:0;padding:15px;max-width:850px;margin-inline:auto}
+header{padding:9px 0 17px;border-bottom:1px solid #394048;margin-bottom:16px}
+h1{margin:0;border-left:4px solid #99404c;padding-left:12px;font-size:25px}
+header p{margin:7px 0 0;color:#b8c0c8;font-size:13px}
+h2{font-size:17px;margin:0 0 12px}.box{background:#1d2329;border:1px solid #38434b;border-radius:14px;padding:15px;margin-bottom:14px}
+p{color:#bec6cb;font-size:14px;line-height:1.55}small{font-size:12px;color:#9aa7b0}
+label{display:block;font-size:13px;color:#bdc8cf;margin-bottom:8px}
+input{width:100%;border-radius:9px;border:1px solid #4b555e;background:#10161b;color:#fff;padding:12px;font-size:14px}
+button{border:0;border-radius:10px;background:#9b4650;color:#fff;padding:12px 16px;font-size:14px;font-weight:650;cursor:pointer}
+button:disabled{opacity:.5}.subbutton{background:#3c454f}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+#message{background:#131a20;border-left:3px solid #60707e;border-radius:7px;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}
+#message[data-state=ok]{border-color:#66b18c}#message[data-state=bad]{border-color:#cc6571}
+#barbg{height:5px;border-radius:5px;background:#323c44;overflow:hidden;margin-top:12px}#bar{height:100%;background:#b56b72;width:0}
+#nav{display:flex;align-items:center;gap:10px;margin:10px 0 14px}#nav[hidden]{display:none}
+#nav button{background:#3b4a55;padding:9px 14px}
+#pages{display:grid;justify-items:start;gap:15px;overflow-x:auto}
+.page{width:max-content;background:white;color:#454545;border-radius:7px;padding:5px;text-align:center}
+.page canvas{display:block;width:auto;max-width:none}
+.cap{font-size:12px;padding:6px}
+footer{color:#9eabb4;font-size:12px;line-height:1.5;padding:15px 0 35px}
+a{color:#c9d7fb}
+</style></head><body>
+<header><h1>ЭКСПЕРТ</h1><p>Отдельная проверка прямой выдачи PDF из Yandex Object Storage</p></header>
+<main>
+<div class="box">
+<h2>Просмотр документа</h2>
+<p>Этот тест не обращается к API Яндекс.Диска и не выполняет запрос <code>/public/resources/download</code>. Он загружает PDF напрямую из Object Storage.</p>
+<label for="url">Публичный HTTPS-адрес PDF из Object Storage</label>
+<input id="url" type="url" inputmode="url" placeholder="https://storage.yandexcloud.net/имя-бакета/файл.pdf" autocomplete="off" spellcheck="false">
+<div class="actions"><button id="open">Открыть PDF</button><button id="copy" class="subbutton">Скопировать ссылку просмотра</button></div>
+</div>
+<div class="box"><h2>Результат</h2><div id="message" role="status" aria-live="polite">Ожидаю публичную ссылку на тестовый PDF.</div><div id="barbg"><div id="bar"></div></div></div>
+<div id="nav" hidden><button id="minus" aria-label="Уменьшить масштаб">−</button><span id="zoom">100%</span><button id="plus" aria-label="Увеличить масштаб">+</button><span id="count"></span></div>
+<div id="pages"></div>
+<footer>Демонстрация. Не загружайте документы реальных клиентов в публичный бакет до проверки защиты ссылок, правил удаления и надёжности доступа. Ключи и токены доступа на эту страницу не вводятся.</footer>
+</main>
+<script type="module">
+const q=id=>document.getElementById(id);
+const SRC=new URLSearchParams(location.search).get("file");
+const ROOT="https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/";
+let pdfjs=null,pdf=null,scale=1,locked=false,opened="",sizeMiB=0;
+function status(s,state=""){q("message").textContent=s;q("message").dataset.state=state}
+function progress(v){q("bar").style.width=Math.round(v*100)+"%"}
+function validate(str){
+  let u;try{u=new URL(str.trim())}catch{throw Error("Некорректный HTTPS-адрес")}
+  const valid=u.hostname==="storage.yandexcloud.net"
+    ? /^\/[^/]+\/.+/.test(u.pathname)
+    : /^[a-z0-9-]+\.storage\.yandexcloud\.net$/.test(u.hostname)&&u.pathname.length>1;
+  if(!valid||u.protocol!=="https:"||u.port||u.username||u.password||u.search||u.hash){
+    throw Error("Нужен постоянный публичный URL конкретного файла в storage.yandexcloud.net, без подписи и временных параметров.");
+  }
+  return u.href;
+}
+function makeLink(url){const u=new URL(location.href);u.search="?file="+encodeURIComponent(url);u.hash="";return u.href}
+async function fetchPdf(url){
+  const r=await fetch(url,{mode:"cors",cache:"no-store"});
+  if(!r.ok)throw Error("Object Storage вернул HTTP "+r.status);
+  const max=40*1048576;
+  const size=Number(r.headers.get("content-length")||0);
+  if(size>max)throw Error("Размер файла больше тестового предела 40 МиБ");
+  if(!r.body){const b=new Uint8Array(await r.arrayBuffer());if(b.length>max)throw Error("Файл больше 40 МиБ");progress(1);return b}
+  const reader=r.body.getReader(),parts=[];let total=0;
+  while(true){
+    const {done,value}=await reader.read();if(done)break;
+    total+=value.byteLength;
+    if(total>max){await reader.cancel();throw Error("Файл больше 40 МиБ")}
+    parts.push(value);if(size)progress(Math.min(.98,total/size));
+    status("Загружено "+(total/1048576).toFixed(2)+" МиБ…");
+  }
+  const bytes=new Uint8Array(total);let n=0;
+  for(const part of parts){bytes.set(part,n);n+=part.length}
+  progress(1);
+  if(bytes.length<5||String.fromCharCode(...bytes.slice(0,5))!=="%PDF-")throw Error("Ответ не является PDF");
+  return bytes;
+}
+async function render(){
+  if(!pdf)return;
+  q("pages").replaceChildren();q("nav").hidden=false;
+  q("zoom").textContent=Math.round(scale*100)+"%";q("count").textContent=pdf.numPages+" стр.";
+  for(let i=1;i<=pdf.numPages;i++){
+    const page=await pdf.getPage(i);
+    const base=page.getViewport({scale:1});
+    const width=Math.min(800,Math.max(250,q("pages").clientWidth-15));
+    const viewport=page.getViewport({scale:scale*width/base.width});
+    const ratio=Math.min(devicePixelRatio||1,1.5);
+    const canvas=document.createElement("canvas");canvas.width=Math.round(viewport.width*ratio);canvas.height=Math.round(viewport.height*ratio);
+    const ctx=canvas.getContext("2d",{alpha:false});if(!ctx)throw Error("Canvas недоступен");
+    const shell=document.createElement("div");shell.className="page";
+    const cap=document.createElement("div");cap.className="cap";cap.textContent="Страница "+i+" из "+pdf.numPages;
+    shell.append(canvas,cap);q("pages").append(shell);
+    await page.render({canvas,canvasContext:ctx,viewport,transform:[ratio,0,0,ratio,0,0]}).promise;
+  }
+}
+async function open(){
+  if(locked)return;let url;try{url=validate(q("url").value)}catch(e){status(e.message,"bad");return}
+  if(opened===url&&pdf){status("Документ уже загружен. "+pdf.numPages+" стр., "+sizeMiB.toFixed(2)+" МиБ.","ok");return}
+  locked=true;q("open").disabled=true;q("nav").hidden=true;q("pages").replaceChildren();pdf=null;progress(0);
+  try{
+    history.replaceState(null,"",makeLink(url));
+    status("Читаю PDF напрямую из Object Storage (без API Яндекс.Диска)…");
+    const data=await fetchPdf(url);
+    sizeMiB=data.byteLength/1048576;
+    if(!pdfjs){pdfjs=await import(ROOT+"pdf.mjs");pdfjs.GlobalWorkerOptions.workerSrc=ROOT+"pdf.worker.mjs"}
+    status("Файл загружен, отображаю страницы…");
+    pdf=await pdfjs.getDocument({data}).promise;scale=1;
+    await render();opened=url;
+    status("УСПЕХ. PDF загружен напрямую. "+pdf.numPages+" стр., "+sizeMiB.toFixed(2)+" МиБ.","ok");
+  }catch(e){
+    status("Ошибка: "+(e?.message||String(e))+".\n\nВозможные причины: нет публичного доступа к объекту, не настроен CORS для https://grigori84.github.io или файл недоступен.","bad");
+  }finally{locked=false;q("open").disabled=false}
+}
+q("open").addEventListener("click",open);
+q("copy").addEventListener("click",async()=>{
+  try{const link=makeLink(validate(q("url").value));await navigator.clipboard.writeText(link);status("Ссылка на этот тестовый просмотрщик скопирована.","ok")}
+  catch(e){status("Не удалось скопировать: "+e.message,"bad")}
+});
+q("plus").addEventListener("click",async()=>{if(locked||!pdf||scale>=1.8)return;locked=true;scale=Math.min(1.8,scale+.2);try{await render()}finally{locked=false}});
+q("minus").addEventListener("click",async()=>{if(locked||!pdf||scale<=.6)return;locked=true;scale=Math.max(.6,scale-.2);try{await render()}finally{locked=false}});
+if(SRC){q("url").value=SRC;open()}
+</script></body></html>
