@@ -91,7 +91,7 @@ async function render(){
     const initial=page.getViewport({scale:1});
     const view=page.getViewport({scale:zoom*availableWidth/initial.width});
     const canvas=document.createElement("canvas");
-    canvas.width=Math.round(view.width*ratio);canvas.height=Math.round(view.height*ratio);
+    canvas.width=Math.round(view.width*ratio);canvas.height=Math.round(view.height*ratio);canvas.style.width=Math.round(view.width)+"px";canvas.style.height=Math.round(view.height)+"px";
     const context=canvas.getContext("2d",{alpha:false});
     if(!context)throw Error("Отображение PDF недоступно");
     const paper=document.createElement("div");paper.className="paper";
