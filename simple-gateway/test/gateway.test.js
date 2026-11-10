@@ -48,7 +48,7 @@ test("signed invalid publish rejected without storage calls", async () => {
   assert.equal((await handler(evt)).statusCode, 400);
 });
 test("signed begin validates length and MD5", async () => {
-  const evt = request({ operation: "begin", bytes: 33554433,
+  const evt = request({ operation: "begin", bytes: 10485761,
     md5_base64: "AAAAAAAAAAAAAAAAAAAAAA==" });
   assert.equal((await handler(evt)).statusCode, 400);
 });
