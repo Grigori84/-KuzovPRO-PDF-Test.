@@ -36,3 +36,17 @@ test("device signature uses DER/SPKI P-256 and signed raw body",()=>{
   evt.headers["x-kpro-device"]="phone/unsafe";
   assert.equal(__testing.auth(evt,raw,keys),null);
 });
+
+
+test('published checksum is calculated from stored bytes, not metadata', async () => {
+  const {Readable}=require('node:stream');
+  const {HeadObjectCommand,GetObjectCommand}=require('@aws-sdk/client-s3');
+  const fake={async send(command){
+    if(command instanceof HeadObjectCommand)return {ContentLength:3,ETag:'"e"',Metadata:{sha256:'a'.repeat(64)}};
+    if(command instanceof GetObjectCommand){assert.equal(command.input.IfMatch,'"e"');return {Body:Readable.from([Buffer.from('bad')])};}
+    throw Error('unexpected command');
+  }};
+  const result=await __testing.adapter(fake).headPublished('f'.repeat(32));
+  assert.equal(result.sha256,require('node:crypto').createHash('sha256').update('bad').digest('hex'));
+  assert.notEqual(result.sha256,'a'.repeat(64));
+});
