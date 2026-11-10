@@ -79,12 +79,9 @@ function makeWorkflow(store, {viewerUrl, newId, now = () => Date.now()} = {}) {
       return {id,url:view(id),already_published:true};
     }
     if (record.phase === "publishing") {
-      if (record.sha256 !== sha256) fail(409, "PUBLICATION_IN_PROGRESS");
-      const obj = await store.headPublished(id);
-      if (!same(obj,bytes,sha256)) fail(409, "PUBLICATION_IN_PROGRESS");
-      // Safe after a crash following PutObject but before state finalization.
-      await transition(id,state,{...record,phase:"published",published_at:now()});
-      return {id,url:view(id),already_published:true};
+      // A timed-out writer may still be in flight. Do not finalize or revoke
+      // based on HEAD alone: an SDK retry after deletion could resurrect it.
+      fail(409, "PUBLICATION_IN_PROGRESS");
     }
     if (record.phase !== "issued") fail(409, "UNEXPECTED_STATE");
     const file = await store.readStaging(id, MAX);
@@ -141,3 +138,4 @@ function makeWorkflow(store, {viewerUrl, newId, now = () => Date.now()} = {}) {
 }
 
 module.exports = { makeWorkflow, FlowError, MAX };
+
