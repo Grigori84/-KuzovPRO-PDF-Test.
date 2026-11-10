@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex,nofollow">
+<title>ЭКСПЕРТ — просмотр сметы</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:#111417;color:#f4f4f4}
+*{box-sizing:border-box}body{margin:0}
+.top{background:#1b2025;border-bottom:1px solid #323b43;padding:14px 16px;display:flex;align-items:center;gap:10px}
+.mark{background:#a54d56;height:38px;width:4px;border-radius:3px}
+.name{font-size:23px;line-height:1.1;font-weight:790;letter-spacing:.01em}
+.tagline{font-size:12px;color:#aab4bc;margin-top:4px}
+main{max-width:900px;margin:0 auto;padding:14px 12px 42px}
+#loading{margin:12px 0 20px;padding:15px;border:1px solid #344049;border-radius:13px;background:#20262b;color:#d2d9df;font-size:14px;line-height:1.5}
+#loading[hidden]{display:none}
+.meter{background:#323d45;height:4px;border-radius:3px;margin-top:11px;overflow:hidden}
+.meter>div{height:100%;width:0%;background:#b75c66;transition:width .15s}
+#loading.error{border-color:#82474c;color:#f3c7cb}
+.tools{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px}
+.tools[hidden]{display:none}
+.pager{font-size:13px;color:#b4bec7}
+.zoom{display:flex;gap:8px;align-items:center;color:#dbe2e8;font-size:14px;font-variant-numeric:tabular-nums}
+button{border:0;border-radius:9px;background:#343e46;color:#fff;min-width:40px;min-height:38px;font-size:20px;font-weight:650}
+button:disabled{opacity:.45}
+#pages{display:grid;gap:13px;overflow-x:auto;justify-items:start}
+.paper{background:white;border-radius:5px;overflow:hidden;padding:5px;box-shadow:0 5px 16px #0005;width:max-content}
+.paper canvas{display:block;max-width:none;width:auto;height:auto}
+.pageNumber{color:#53616b;background:#fff;text-align:center;padding:6px 0 3px;font-size:12px}
+footer{max-width:900px;margin:10px auto 0;color:#89969f;font-size:11px;padding:0 16px 24px;line-height:1.55}
+</style>
+</head>
+<body>
+<header class="top"><span class="mark" aria-hidden="true"></span><div><div class="name">ЭКСПЕРТ</div><div class="tagline">Кузовной сервис · просмотр сметы</div></div></header>
+<main>
+<div id="loading" role="status" aria-live="polite">Открываем смету…<div class="meter"><div id="bar"></div></div></div>
+<div id="tools" class="tools" hidden><div id="count" class="pager"></div><div class="zoom"><button id="minus" aria-label="Уменьшить масштаб">−</button><span id="zoom">100%</span><button id="plus" aria-label="Увеличить масштаб">+</button></div></div>
+<div id="pages"></div>
+</main>
+<footer>Тестовый прототип. Доступ по ссылке предоставляется любому, кто её получил. Публикация реальных клиентских документов пока не разрешена.</footer>
+<script type="module">
+const TEST_URL="https://storage.yandexcloud.net/kuzovpro-pdf-test-84/KuzovPRO_large_test_6.2MB.pdf";
+const CDN="https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/";
+const q=id=>document.getElementById(id);
+let pdf=null,zoom=1,running=false;
+function status(s,error=false){const box=q("loading");box.hidden=false;box.classList.toggle("error",error);box.firstChild.textContent=s}
+function pct(n){q("bar").style.width=Math.max(0,Math.min(100,Math.round(n*100)))+"%"}
+function urlFromQuery(){
+  // Demo is the sole published test file. In production, the app creates 128-bit random IDs.
+  const fragment=decodeURIComponent(location.hash.slice(1));
+  if(fragment==="demo")return TEST_URL;
+  const match=/^id=([0-9a-f]{32})$/.exec(fragment);
+  if(!match)throw Error("Некорректная ссылка на смету. Для проверки откройте тестовый адрес #demo.");
+  return "https://storage.yandexcloud.net/kuzovpro-pdf-test-84/estimates/"+match[1]+".pdf";
+}
+async function fetchFile(url){
+  const r=await fetch(url,{mode:"cors",cache:"no-store"});
+  if(!r.ok)throw Error("Не удалось получить документ (HTTP "+r.status+")");
+  const max=40*1048576;
+  const known=Number(r.headers.get("content-length")||0);
+  if(known>max)throw Error("Документ слишком большой для этого теста");
+  if(!r.body){
+    const bytes=new Uint8Array(await r.arrayBuffer());
+    if(bytes.length>max)throw Error("Документ слишком большой");
+    pct(1);return bytes;
+  }
+  let total=0;const chunks=[],reader=r.body.getReader();
+  while(true){
+    const x=await reader.read();if(x.done)break;
+    total+=x.value.byteLength;
+    if(total>max){await reader.cancel();throw Error("Документ слишком большой")}
+    chunks.push(x.value);
+    if(known)pct(Math.min(.95,total/known));
+    status("Загружаем документ… "+(total/1048576).toFixed(1)+" МиБ");
+  }
+  const bytes=new Uint8Array(total);let at=0;
+  for(const chunk of chunks){bytes.set(chunk,at);at+=chunk.length}
+  pct(1);return bytes;
+}
+async function render(){
+  if(!pdf)return;
+  const host=q("pages");host.replaceChildren();
+  q("tools").hidden=false;
+  q("zoom").textContent=Math.round(zoom*100)+"%";
+  q("count").textContent="Страниц: "+pdf.numPages;
+  const availableWidth=Math.min(880,Math.max(280,host.clientWidth-12));
+  const ratio=Math.min(devicePixelRatio||1,1.6);
+  for(let n=1;n<=pdf.numPages;n++){
+    const page=await pdf.getPage(n);
+    const initial=page.getViewport({scale:1});
+    const view=page.getViewport({scale:zoom*availableWidth/initial.width});
+    const canvas=document.createElement("canvas");
+    canvas.width=Math.round(view.width*ratio);canvas.height=Math.round(view.height*ratio);canvas.style.width=Math.round(view.width)+"px";canvas.style.height=Math.round(view.height)+"px";
+    const context=canvas.getContext("2d",{alpha:false});
+    if(!context)throw Error("Отображение PDF недоступно");
+    const paper=document.createElement("div");paper.className="paper";
+    const label=document.createElement("div");label.className="pageNumber";label.textContent=n+" / "+pdf.numPages;
+    paper.append(canvas,label);host.append(paper);
+    await page.render({canvas,canvasContext:context,viewport:view,transform:[ratio,0,0,ratio,0,0]}).promise;
+  }
+}
+async function start(){
+  if(running)return;running=true;
+  try{
+    const url=urlFromQuery();
+    status("Получаем PDF…");
+    const data=await fetchFile(url);
+    if(data.length<5||String.fromCharCode(...data.slice(0,5))!=="%PDF-")throw Error("Полученный документ не PDF");
+    const pdfjs=await import(CDN+"pdf.mjs");
+    pdfjs.GlobalWorkerOptions.workerSrc=CDN+"pdf.worker.mjs";
+    status("Подготавливаем страницы…");
+    pdf=await pdfjs.getDocument({data}).promise;
+    await render();
+    q("loading").hidden=true;
+  }catch(e){status("Не удалось открыть смету: "+(e?.message||String(e)),true)}
+  finally{running=false}
+}
+q("plus").addEventListener("click",async()=>{
+  if(running||zoom>=1.8||!pdf)return;
+  running=true;
+  try{zoom=Math.min(1.8,Math.round((zoom+.2)*10)/10);await render()}
+  finally{running=false}
+});
+q("minus").addEventListener("click",async()=>{
+  if(running||zoom<=.6||!pdf)return;
+  running=true;
+  try{zoom=Math.max(.6,Math.round((zoom-.2)*10)/10);await render()}
+  finally{running=false}
+});
+start();
+</script>
+</body></html>
