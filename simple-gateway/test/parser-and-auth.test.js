@@ -3,6 +3,7 @@ const test=require("node:test");
 const assert=require("node:assert/strict");
 const {PDFDocument}=require("pdf-lib");
 const {generateKeyPairSync,createHash,sign}=require("node:crypto");
+process.env.STAGING_BUCKET="offline-staging";
 const {__testing}=require("../index.js");
 const parse=__testing.adapter({send:async()=>{throw Error("unexpected network")}}).parsePdf;
 
@@ -49,4 +50,13 @@ test('published checksum is calculated from stored bytes, not metadata', async (
   const result=await __testing.adapter(fake).headPublished('f'.repeat(32));
   assert.equal(result.sha256,require('node:crypto').createHash('sha256').update('bad').digest('hex'));
   assert.notEqual(result.sha256,'a'.repeat(64));
+});
+
+test('presigned PUT binds required headers without network access', async () => {
+  const {S3Client}=require('@aws-sdk/client-s3');
+  const client=new S3Client({region:'ru-central1',endpoint:'https://storage.yandexcloud.net',forcePathStyle:true,requestChecksumCalculation:'WHEN_REQUIRED',credentials:{accessKeyId:'offline-test',secretAccessKey:'offline-secret'}});
+  const issued=await __testing.adapter(client).signUpload('1'.repeat(32),100,'AAAAAAAAAAAAAAAAAAAAAA==');
+  const signed=new URL(issued.upload_url).searchParams.get('X-Amz-SignedHeaders').split(';');
+  for(const header of ['content-type','content-length','content-md5','if-none-match']) assert.ok(signed.includes(header),header);
+  assert.equal(issued.headers['Content-Length'],'100');
 });
