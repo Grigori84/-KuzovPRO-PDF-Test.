@@ -1,0 +1,14 @@
+{
+  "name": "kuzovpro-storage-ticket-prototype",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Private Yandex Cloud Function proof of concept. Not production ready.",
+  "main": "index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/s3-presigned-post": "^3.0.0"
+  }
+}
