@@ -60,7 +60,9 @@ sha256sum build/*.zip
    Не менять права/бакеты, не делать функцию публичной.
 2. Диагностическая версия: entrypoint **`selftest.handler`**,
    `SELFTEST_ENABLED=true`, `GATEWAY_ENABLED=false`,
-   `LEGACY_WRITERS_DRAINED=false` (либо не задан). Route остаётся disabled.
+   `LEGACY_WRITERS_DRAINED=false` (либо не задан). Для новой приватной
+   диагностической версии предусмотреть timeout180с; действующую версию
+   не редактировать. Route остаётся disabled.
    Не направлять API Gateway на selftest. Использовать **прямой приватный IAM-вызов**
    точной версии в доверенной консоли, передав raw JSON:
 
@@ -92,6 +94,11 @@ sha256sum build/*.zip
    **остановка**, route disabled. Не расширять IAM для прохождения теста без
    отдельного разрешения. Сохранить только безопасные коды ошибки/test_ids.
    Диагностика не принимает клиентские ID и не разрешает массовую очистку.
+   При жёстком timeout синтетические IDs доступны в приватном логе
+   `pdf_recovery_synthetic_id` (записываются до публичных writers). Cleanup не
+   считается выполненным: сверить именно эти IDs/их uploads и terminal fence;
+   не удалять объект, пока возможность поздней записи не исключена. Если
+   установить все uploads/их исход нельзя — остановиться и привлечь поддержку.
    При потере ответа CreateMultipartUpload возможен неизвестный **пустой** upload:
    данные/Complete не отправляются до durable control CAS. Его учёт/уборку
    согласовать отдельно; не добавлять Lifecycle или общую очистку автоматически.
@@ -135,7 +142,7 @@ publishing по таймеру, не выдавать новый ID вместо
 - Сервер совместим с установленной Android **1.1.1/code 22** по прежним begin,
   publish и revoke. Автовосстановление lost begin возможно только для новых
   операций Android **1.1.2/code 23** из отдельного PR `fix/kuzovpro-begin-recovery`
-  в Grigori84/KuzovPRO. Сборка/подпись — по его инструкции Codemagic112.
+  в [Grigori84/KuzovPRO PR #40](https://github.com/Grigori84/KuzovPRO/pull/40). Сборка/подпись — по его инструкции Codemagic112.
   Установка здесь не выполнялась. Старый BEGIN_UNKNOWN без ключа не становится
   восстановимым после обновления; не очищать данные/журнал ради обхода.
 - Пройти Android/Compose тесты на Linux/KVM и проверить signed update 23>22 с

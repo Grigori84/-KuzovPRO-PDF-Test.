@@ -1,6 +1,7 @@
 # Recovery-кандидат: проверка и оставшиеся блокеры
 
-11.11.2026. Кодовый commit `e9b14a19c57f6714ecb66edfda977699c8b61eac`,
+11.11.2026. Кодовый commit `d9cddbefa502319172f3030d1087189569fe2a4e`,
+[Draft PR #3](https://github.com/Grigori84/-KuzovPRO-PDF-Test./pull/3),
 база серверного PR #1 `54a7e6340847695c845b2560f25d07bbf99ef513`.
 Это исходники/локальная проверка, **не развёрнутая и не принятая эксплуатация**.
 
@@ -26,12 +27,12 @@ production guard не ослаблен.
 
 Локальный ZIP построен дважды из чистого кодового commit с одинаковым SHA:
 
-- `kuzovpro-simple-pdf-gateway-0.2.0-e9b14a19c57f.zip`, **8 805 615 байт**.
-- SHA-256: `02ef7732a54bf070d49cc1ecc4aa6aab312d0d1b7135fa6d62d39d70e639d87a`.
+- `kuzovpro-simple-pdf-gateway-0.2.0-d9cddbefa502.zip`, **8 805 698 байт**.
+- SHA-256: `92a38ae456a05193c4e5f202d5d2e4653bfe26bdc008149af34dc79c9c6ab805`.
 - Production runtime-файлы/dependencies и RELEASE-MANIFEST; без tests/секретов.
   Скрипт `scripts/build-release.py` ничего не загружает в облако.
 
-Отдельный Android commit `15c873f`, 1.1.2/code 23 на базе #38 `5f8ed7e`:
+[Отдельный Android PR #40](https://github.com/Grigori84/KuzovPRO/pull/40), commit `15c873f`, 1.1.2/code 23 на базе #38 `5f8ed7e`:
 **114 JVM pass**, 4 Python gate pass; lintDebug/lintSandbox, assembleDebug и
 assembleDebugAndroidTest успешны. Полный AndroidTest скомпилирован, **не запущен**
 из-за отсутствияKVM; подписанный Codemagic/установка23 здесь не выполнялись.
