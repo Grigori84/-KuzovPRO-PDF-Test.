@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name" translatable="false">КузовPRO — тест шлюза</string>
+    <string name="device_identity" translatable="false">ID устройства: %1$s</string>
+</resources>

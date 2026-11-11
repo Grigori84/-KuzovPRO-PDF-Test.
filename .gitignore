@@ -1,0 +1,11 @@
+**/.gradle/
+**/.kotlin/
+**/build/
+**/local.properties
+**/.idea/
+*.iml
+node_modules/
+*.apk
+!android-gateway-test/artifacts/kuzovpro-gateway-test-debug.apk
+*.jks
+*.keystore
