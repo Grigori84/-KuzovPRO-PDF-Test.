@@ -1,54 +1,73 @@
-# Фактические проверки — 11 ноября 2026, UTC
+# Проверки 0.2 PDF — 11 ноября 2026, UTC
 
-Debug APK **реально собран в рабочей среде**, через включённый Gradle Wrapper.
-Это не сборка Codemagic и не проверка на Samsung.
+Debug APK **фактически собран и проверен в Codex**, из исходников этой ветки.
+Файл `artifacts/kuzovpro-gateway-test-debug.apk`, 916979 байт.
+Версия `0.2-pdf-test` / versionCode 2, пакет `ru.kuzovpro.gatewaytest`, minSdk 26,
+targetSdk 35, единственное разрешение INTERNET.
 
-Артефакт: `artifacts/kuzovpro-gateway-test-debug.apk`.
-SHA-256:
-`58f91c90009281427680e21a2d14ecaf2eb7e0af958a3bf8fa000335110b03e1`.
+SHA-256: `f2f9a7ff334746e391f66f4229c137ec066bcb69074b7766fc61c26b6ed2e068`.
 
 | Проверка | Результат |
 | --- | --- |
-| `npm ci --ignore-scripts --no-audit --no-fund` в `simple-gateway` | Успешно, lockfile согласован |
-| `STAGING_BUCKET=offline-private PUBLIC_BUCKET=offline-public npm test` | 25/25 тестов, без сетевых вызовов |
-| `./gradlew --no-daemon --max-workers=2 testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest` | BUILD SUCCESSFUL |
-| JVM ProtocolTest | 6/6 |
-| JVM GatewayTransportTest | 7/7 |
-| Android lint 8.7.3 | 0 ошибок, 0 предупреждений |
-| Gradle Wrapper / официальный Gradle 8.9 | Скачан и запущен; SHA-256 закреплён и проверен |
-| `apksigner verify --verbose` | Verifies; APK Signature Scheme v2, 1 signer |
-| `aapt dump badging` | `ru.kuzovpro.gatewaytest`, version `0.1-test`, minSdk 26, targetSdk 35, только INTERNET |
-| `adb devices -l` | Подключённых устройств нет |
-| `codemagic.yaml` | YAML разобран; путь проекта и отсутствие triggering/publishing проверены |
+| Gradle Wrapper 8.9: testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest | BUILD SUCCESSFUL |
+| JVM-тесты приложения | **36/36**, без пропусков |
+| Серверные офлайн-тесты PR №1 | **25/25** |
+| Android lint 8.7.3 | **0 ошибок, 0 предупреждений** |
+| apksigner verify | Verifies, APK Signature Scheme v2, один signer |
+| Сертификат обновления | Совпадает с ранее выданным здесь APK 0.1 |
+| aapt dump badging | Пакет/версия/API/разрешение проверены |
+| codemagic.yaml | YAML разобран, нет triggering/publishing; workflow прежний |
+| Инструментальные DeviceKeyTest и SyntheticPdfTest | Скомпилированы, **не запускались** |
+| Живой полный PDF-цикл | **Не выполнялся** |
+| Codemagic | **Не запускался**, доступа к аккаунту нет |
 
-Среда фактической сборки: Linux amd64, OpenJDK 21.0.12.1, Node.js 24.19.0,
-npm 11.9.0, Gradle 8.9, AGP 8.7.3, Kotlin 2.0.21, Android SDK 35,
-Build Tools 35.0.0. Codemagic настроен на поддерживаемые Java 17 и Node 22;
-сборка **в самом Codemagic не запускалась** — доступа к аккаунту нет.
+JVM-набор:
+- GatewayTransportTest: 7/7.
+- OfflineServerCycleTest: 2/2.
+- PdfCycleTest: 16/16.
+- PdfNetworkTest: 5/5.
+- ProtocolTest: 6/6.
 
-Проверяется точный canonical, размер и MD5 синтетического набора, DER-подпись P-256,
-защитные копии тела, повтор без вызова signer, совпадение фактически отправленных
-байтов/заголовков, запрет redirects, ограничение ответа, сокрытие временного URL,
-HTTP 401/409, ошибки DNS и чтения ответа без ложного успеха.
+Проверены сохранение точных PDF-байтов/ID/SHA-256 до сетевого действия, запрет второго
+begin после неизвестного результата, восстановление каждого pending-этапа, потеря
+ответов PUT/publish/revoke, истечение PUT URL, 409/412 без перезаписи, ошибка записи ID
+до PUT, точный replay, запрет redirects и лишних PUT-заголовков, размер/MD5/ETag,
+сверка скачанного документа по размеру/SHA-256/MIME, отсутствие ложного подтверждения
+недоступности при HTTP 200/3xx/5xx и сетевых ошибках.
 
-Тест совместимости передаёт одноразовую искусственную JVM-подпись через stdin
-в Node.js и вызывает саму `auth()` из `simple-gateway/index.js` commit
-`54a7e6340847695c845b2560f25d07bbf99ef513`:
-подлинная подпись принимается, изменение байтов тела/nonce и timestamp старше
-90 секунд отклоняются. Материал подписи не выводится в журналы.
+Два интеграционных JVM-теста используют настоящую auth() из index.js, makeWorkflow()
+из workflow.js и pdf-lib PR №1 через локальный Node stdin/stdout, с поддельным
+хранилищем в памяти. Пройден полный begin → PUT → publish → проверка PDF → revoke →
+404. Отдельно сервер действительно завершает publish, ответ теряется; после
+перезапуска клиента повтор publish возвращает ту же публикацию, без нового begin/PUT.
+Это офлайн-проверка, не обращение к Yandex Cloud. Подписи одноразовых тестовых ключей
+не печатаются в отчёты или логи.
 
-Инструментальный `DeviceKeyTest` **скомпилирован, но не запускался**:
-эмулятора и подключённого Samsung нет. Android Keystore, сохранение ID при
-перезапуске реального приложения, UI на One UI и внешний HTTPS-вызов авторизованного
-шлюза требуют испытания на телефоне по `README.md`.
+Среда: Linux amd64, OpenJDK 21.0.12.1, Node 24.19.0, npm 11.9.0,
+Gradle 8.9, AGP 8.7.3, Kotlin 2.0.21, SDK 35 / Build Tools 35.0.0.
+Команда финальной проверки:
 
-Живой endpoint не вызывался, серверный ключ устройства не регистрировался.
-IAM-токены и S3-ключи не использовались. PUT и publish не выполнялись.
-Новые облачные ресурсы не создавались; настройки и состояние API Gateway не менялись.
-Основной репозиторий КузовPRO не изменялся. Исходники сервера из PR №1 также
-не изменялись; добавлен только `simple-gateway/package-lock.json` для `npm ci`.
+```sh
+./gradlew --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process \
+  testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest
+```
 
-APK — отладочный. Ветка содержит готовый файл для установки с телефона, чтобы
-не требовать от владельца локальной среды. Закрытый ключ отладочного сертификата
-сборки не хранится в Git и не является ключом устройства. ECDSA-ключ устройства
-создаётся только при запуске установленного приложения.
+В этой среде Kotlin daemon запускался нестабильно; финальная сборка выполнена
+с компиляцией внутри Gradle. Codemagic сохраняет Java 17/Node 22.
+
+Android-эмулятор был установлен и запускался для инструментальных тестов.
+AVD не стартовал: эмулятор потребовал 7372.80 MB для раздела данных, доступно
+3034.79 MB. Подключённого Samsung нет. Поэтому создание/рендеринг именно
+Android PdfDocument с кириллицей, реальный Keystore, One UI и запуск браузера
+требуют испытания на телефоне. Для этого добавлен локальный просмотр сохранённого
+PDF без шлюза. Интеграционные JVM-тесты используют отдельный одностраничный PDF fixture.
+
+По сообщению владельца, версия 0.1 уже прошла на Samsung авторизацию:
+401 без подписи, begin 200, replay 409, revoke 200, выключенный шлюз 503.
+Это не проверка нового PDF-цикла и не повторялось в этой задаче.
+
+**Шлюз не переключался и не включался.** Во время разработки не было живых begin,
+PUT, publish, revoke или GET к документам. IAM, API Gateway, бакеты, серверная
+архитектура, index.js/workflow.js и основной репозиторий КузовPRO не менялись.
+Новые облачные ресурсы не создавались. Полный живой цикл — только после установки
+APK и отдельного разрешения владельца на переключение gateway-disabled.

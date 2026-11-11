@@ -4,12 +4,8 @@ import android.app.Application
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import java.net.ConnectException
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
 import java.util.UUID
 import java.util.concurrent.Executors
-import javax.net.ssl.SSLException
 
 class GatewayTestApp : Application() {
     lateinit var session: TestSession
@@ -20,108 +16,96 @@ class GatewayTestApp : Application() {
     }
 }
 
-// Application lifetime: rotation never restarts a request. Replay lives only in memory.
+// One process-wide worker: double taps and rotation cannot start concurrent publications.
 class TestSession(context: Context) {
     private val prefs = context.getSharedPreferences("gateway-test", Context.MODE_PRIVATE)
+    private val disk = AndroidCycleDisk(context)
     private val executor = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     private val key = DeviceKey()
     private val transport = GatewayTransport()
-    private var lastRequest: GatewayRequest? = null
-    private var lastOperation: String? = null
-    private var lastTarget: String? = null
+    private var cycle: PdfCycle? = null
     var listener: (() -> Unit)? = null
     var busy = false; private set
     var publicKey: String? = null; private set
     var deviceId: String = prefs.getString("device", "") ?: ""; private set
-    var issuedId: String? = prefs.getString("issued_id", null)?.takeIf { Protocol.idPattern.matches(it) }; private set
-    var revoked = prefs.getBoolean("revoked", false); private set
-    var status = "Подготовка тестового ключа…"; private set
-    val canBegin: Boolean get() = publicKey != null && (issuedId == null || revoked)
-    val canReplay: Boolean get() = lastRequest != null
+    var status = "Чтение сохранённого состояния…"; private set
+    val state: CycleState? get() = cycle?.state
+    val canPrepare get() = cycle?.canPrepare == true
+    val canBegin get() = publicKey != null && cycle?.canBegin == true
+    val canPut get() = publicKey != null && cycle?.canPut == true
+    val canPublish get() = publicKey != null && cycle?.canPublish == true
+    val canRevoke get() = publicKey != null && cycle?.canRevoke == true
+    val canReplay get() = publicKey != null && cycle?.canReplay == true
+    val canDeleteKey get() = publicKey != null && cycle?.canDeleteKey == true
+    val viewerUrl get() = state?.takeIf { it.phase == CyclePhase.PUBLISHED }?.viewerUrl
 
     init {
-        if (prefs.getBoolean("key_deleted", false)) {
-            status = "Тестовый ключ удалён. Новый ключ создаётся только по кнопке."
-        } else createKey()
+        work {
+            // v0.1 IDs migrate without pretending its synthetic non-PDF bytes can be published.
+            if (disk.load() == null) {
+                val oldId = prefs.getString("issued_id", null)?.takeIf { Protocol.idPattern.matches(it) }
+                if (oldId != null) {
+                    disk.save(CycleState(if (prefs.getBoolean("revoked", false)) CyclePhase.REVOKED else CyclePhase.ISSUED, id = oldId))
+                    check(prefs.edit().remove("issued_id").remove("revoked").commit())
+                }
+            }
+            cycle = newCycle()
+            if (!prefs.getBoolean("key_deleted", false)) loadKey()
+            status = cycle!!.message + if (prefs.getBoolean("key_deleted", false)) "\nТестовый ключ удалён. Создайте новый только для нового испытания." else ""
+        }
     }
 
-    fun createKey() = work {
+    private fun newCycle() = PdfCycle(disk, transport, HttpsPdfNetwork(), {
+        Protocol.signed(it, deviceId, key::sign)
+    }, onProgress = { main.post { listener?.invoke() } })
+
+    private fun loadKey() {
         if (deviceId.isEmpty() || prefs.getBoolean("key_deleted", false)) {
-            // Random test identity; never use IMEI, serial number or Android ID.
             val newId = "test_" + UUID.randomUUID().toString().replace("-", "")
             check(prefs.edit().putString("device", newId).putBoolean("key_deleted", false).commit())
             deviceId = newId
         }
         publicKey = key.publicKeyBase64()
-        status = "Ключ готов. Зарегистрируйте ID устройства и публичный ключ на сервере перед подписанным тестом."
+    }
+
+    fun createKey() = work {
+        if (cycle == null || cycle?.canDeleteKey != true) return@work
+        loadKey()
+        status = "Ключ готов. Зарегистрируйте ID устройства и публичный ключ перед подписанным тестом."
+    }
+
+    fun preparePdf() = action { it.prepare(SyntheticPdf.create()) }
+    fun fullCycle() = action { if (publicKey != null) it.fullCycle() }
+    fun begin() = action { if (publicKey != null) it.begin() }
+    fun upload() = action { if (publicKey != null) it.upload() }
+    fun publish() = action { if (publicKey != null) { it.publish(); if (it.state.phase == CyclePhase.PUBLISHED) it.checkDocument() } }
+    fun revoke() = action { if (publicKey != null) it.revoke() }
+    fun replay() = action { if (publicKey != null) it.replay() }
+    fun checkDocument() = action { it.checkDocument() }
+    private fun action(block: (PdfCycle) -> Unit) = work {
+        val active = cycle ?: return@work
+        block(active)
+        status = active.message
     }
 
     fun unsigned() = work {
-        status = transport.post(GatewayRequest(Protocol.beginBody())).description()
-    }
-
-    fun begin() {
-        if (!canBegin) return
-        signed("begin", null, Protocol.beginBody())
-    }
-
-    fun revoke() {
-        val id = issuedId ?: return
-        if (publicKey == null || revoked) return
-        signed("revoke", id, Protocol.revokeBody(id))
-    }
-
-    private fun signed(operation: String, target: String?, body: ByteArray) = work {
-        val request = Protocol.signed(body, deviceId, key::sign)
-        // Freeze before opening the socket, including on network failure.
-        lastRequest = request
-        lastOperation = operation
-        lastTarget = target
-        handle(transport.post(request), operation, target)
-    }
-
-    fun replay() {
-        val request = lastRequest ?: return
-        val operation = lastOperation ?: return
-        val target = lastTarget
-        work { handle(transport.post(request), operation, target) }
-    }
-
-    private fun handle(response: GatewayResponse, operation: String, target: String?) {
-        status = response.description()
-        if (response.status !in 200..299 || response.error != null) return
-        if (operation == "begin") {
-            val id = response.id ?: return
-            issuedId = id
-            revoked = false
-            val saved = prefs.edit().putString("issued_id", id).putBoolean("revoked", false).commit()
-            status += if (saved) "\nbegin принят. ID сохранён. Загрузка не выполнялась."
-                else "\nID: $id\nНе удалось сохранить ID на диск. Запишите его перед закрытием приложения."
-        } else if (operation == "revoke" && response.revoked && response.id == target) {
-            revoked = true
-            val saved = prefs.edit().putBoolean("revoked", true).commit()
-            status += if (saved) "\nОтзыв ID подтверждён сервером и сохранён."
-                else "\nСервер подтвердил отзыв, но сохранить отметку на телефоне не удалось."
-        } else {
-            status += "\nОтзыв не подтверждён: проверьте ответ сервера повторным revoke."
-        }
+        val body = state?.pdf?.let { Protocol.beginBody(it.bytes()) } ?: Protocol.beginBody()
+        status = transport.post(GatewayRequest(body)).description()
     }
 
     fun deleteKey() = work {
-        // Do not silently regenerate on next launch after explicit deletion.
+        if (!canDeleteKey) return@work
         check(prefs.edit().putBoolean("key_deleted", true).commit())
         key.delete()
         publicKey = null
         deviceId = ""
-        issuedId = null
-        revoked = false
-        lastRequest = null
-        lastOperation = null
-        lastTarget = null
-        check(prefs.edit().remove("device").remove("issued_id").remove("revoked").commit())
-        status = "Тестовый ключ удалён из Android Keystore. Удалите запись этого устройства из серверного списка разрешённых ключей."
+        check(prefs.edit().remove("device").commit())
+        cycle = newCycle()
+        status = "Тестовый ключ удалён. Удалите регистрацию устройства на сервере. Сохранённый PDF и подтверждённое состояние оставлены для проверки."
     }
+
+    fun browserFailed() { status = "Не удалось открыть браузер. Установите или включите Samsung Internet либо другой браузер."; listener?.invoke() }
 
     private fun work(block: () -> Unit) {
         if (busy) return
@@ -129,19 +113,13 @@ class TestSession(context: Context) {
         listener?.invoke()
         executor.execute {
             try { block() }
-            catch (_: UnknownHostException) { status = "Нет соединения: не удалось найти адрес шлюза. Проверьте интернет и DNS." }
-            catch (_: SocketTimeoutException) { status = uncertain("Истекло время ожидания.") }
-            catch (_: SSLException) { status = "Ошибка защищённого TLS-соединения. Проверьте дату телефона и сеть." }
-            catch (_: ConnectException) { status = "Соединение со шлюзом не установлено. Проверьте интернет." }
-            catch (_: java.io.IOException) { status = uncertain("Соединение прервано или локальное хранилище недоступно.") }
-            catch (_: Exception) { status = "Не удалось выполнить действие: ошибка ключа, протокола или локального хранения. Временные секреты не выводятся." }
-            // No exception messages/stack traces: libraries may include URLs or request material.
-            main.post {
-                busy = false
-                listener?.invoke()
+            catch (error: Exception) {
+                status = if (cycle?.storageFailed == true) cycle!!.message
+                    else if (cycle == null) "Не удалось прочитать сохранённый цикл или инициализировать ключ. Сетевые действия цикла заблокированы; данные не удалены."
+                    else connectionFailure(error) + "\nДанные не сброшены. Проверьте сохранённый этап; новая публикация автоматически не создаётся."
             }
+            // No exception messages or stack traces: they may contain signed URLs.
+            main.post { busy = false; listener?.invoke() }
         }
     }
-
-    private fun uncertain(message: String) = "$message\nРезультат неизвестен: сервер мог принять запрос. Повтор использует прежний nonce; после 90 секунд возможен HTTP 401. Если ответ begin потерян, повтор не восстановит выданный ID."
 }
