@@ -18,6 +18,7 @@ const {PDFDocument}=require("pdf-lib");
 const {credentialProvider}=require("./ephemeral");
 const {makeWorkflow,FlowError,MAX}=require("./workflow");
 const {__testing}=require("./index");
+const {runRecoveryChecks}=require("./recovery-selftest");
 
 const DEVICE="cloud-selftest";
 const STAGING=process.env.STAGING_BUCKET;
@@ -40,7 +41,7 @@ function configuration(){
 function storage(){
   const client=new S3Client({
     endpoint:"https://storage.yandexcloud.net",region:"ru-central1",
-    forcePathStyle:true,requestChecksumCalculation:"WHEN_REQUIRED",
+    forcePathStyle:true,requestChecksumCalculation:"WHEN_REQUIRED",maxAttempts:1,
     credentials:credentialProvider()
   });
   return __testing.adapter(client);
@@ -157,8 +158,23 @@ async function revokeTest(id){
 module.exports.handler=async event=>{
   let phase="start",testId=null;
   try{
+    if(event?.httpMethod||event?.requestContext)throw new FlowError(403,"PRIVATE_SELFTEST_ONLY");
     configuration();
     const body=parseInput(event);
+    if(body.operation==="recovery"){
+      if(process.env.GATEWAY_ENABLED==="true")throw new FlowError(503,"RECOVERY_SELFTEST_REQUIRES_DISABLED_GATEWAY");
+      const result=await runRecoveryChecks(storage(),await artificialPdf(),{
+        viewerUrl:VIEWER,newId:()=>randomBytes(16).toString("hex"),
+        async uploadStaging(ticket,bytes){
+          const url=new URL(ticket.upload_url);
+          if(url.protocol!=="https:"||url.hostname!=="storage.yandexcloud.net")throw new FlowError(503,"UNEXPECTED_PUT_HOST");
+          const response=await fetch(url,{method:"PUT",redirect:"error",headers:ticket.headers,body:bytes,signal:AbortSignal.timeout(30000)});
+          if(!response.ok)throw new FlowError(502,"SELFTEST_PUT_FAILED");
+        }
+      });
+      return reply(200,{...result,runtime:process.version,
+        sdk_version:require("@aws-sdk/client-s3/package.json").version,pdf_lib_version:require("pdf-lib/package.json").version});
+    }
     if(body.operation==="upload"||body.operation==="publish"){
       const result=await upload(body.operation);
       return reply(200,result);
@@ -175,6 +191,7 @@ module.exports.handler=async event=>{
     return reply(err instanceof FlowError?err.status:503,{
       error:err instanceof FlowError?err.code:"SELFTEST_FAILED",phase,
       ...(testId?{test_id:testId}:{}),
+      ...(Array.isArray(err.testIds)?{test_ids:err.testIds.filter(id=>typeof id==="string"&&ID.test(id))}:{}),
       note:"No automatic revoke if publication could still be in flight"
     });
   }

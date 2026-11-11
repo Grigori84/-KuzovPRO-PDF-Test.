@@ -1,6 +1,8 @@
 "use strict";
 const test=require("node:test");
 const assert=require("node:assert/strict");
+process.env.STAGING_BUCKET="offline-selftest-staging";
+process.env.PUBLIC_BUCKET="offline-selftest-public";
 const {handler}=require("../selftest");
 
 test("selftest refuses invocation unless explicitly enabled",async()=>{

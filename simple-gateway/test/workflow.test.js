@@ -1,142 +1,228 @@
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const {makeWorkflow,MAX} = require("../workflow");
+const test=require("node:test");
+const assert=require("node:assert/strict");
+const {MAX}=require("../workflow");
+const {fixture,hash,deferred}=require("../test-support/memory-store");
+const rejects=(promise,status,code)=>assert.rejects(promise,e=>e.status===status&&e.code===code);
+const lost=()=>{throw Error("synthetic lost network response");};
 
-const HASH = "a".repeat(64);
-const MD5 = "AAAAAAAAAAAAAAAAAAAAAA==";
-function fixture() {
-  const state = new Map(), stage = new Map(), published = new Map();
-  const bytes = new Uint8Array([37,80,68,70,45,49,46,55,10,
-    49,50,51,52,53,54,55,56,57,48,10,37,37,69,79,70,10]);
-  let revision = 0, nextId=1;
-  const precondition = () => {const e=new Error("PRECONDITION_FAILED");
-    e.code="PRECONDITION_FAILED";throw e;};
-  const store = {
-    state,stage,published,bytes,
-    beforeWrite: null,
-    async putState(id,value,c={}) {
-      const prev=state.get(id);
-      if(c.ifNoneMatch==="*"&&prev)precondition();
-      if(c.ifMatch&&(!prev||prev.etag!==c.ifMatch))precondition();
-      const result={value:{...value},etag:"etag-"+(++revision)};
-      state.set(id,result);return result;
-    },
-    async getState(id) {
-      const v=state.get(id);
-      return v?{value:{...v.value},etag:v.etag}:null;
-    },
-    async signUpload(id,size,md5){return {
-      upload_url:"https://storage.example/"+id,headers:{"Content-MD5":md5},
-      expires_seconds:300
-    };},
-    async readStaging(id) {
-      const data=stage.get(id);
-      return data?{bytes:data,contentType:"application/pdf"}:null;
-    },
-    async sha256(){return HASH;},
-    async parsePdf(data){return data[0]===37;},
-    async putPublishedOnce(id,data,sha) {
-      if(store.beforeWrite)await store.beforeWrite();
-      if(published.has(id))precondition();
-      published.set(id,{bytes:data.length,sha256:sha});
-    },
-    async headPublished(id){return published.get(id)||null;},
-    async removePublished(id){published.delete(id);},
-    async removeStaging(id){stage.delete(id);}
-  };
-  const flow=makeWorkflow(store,{viewerUrl:"https://example.com/client.html",
-    newId:()=>String(nextId++).padStart(32,"0")});
-  async function begin(){
-    const ticket=await flow.begin({bytes:bytes.length,md5_base64:MD5},"phone1");
-    stage.set(ticket.id,bytes);return ticket.id;
+for(const legacy of [false,true])test(`publish/retry/revoke with ${legacy?'installed 1.1.1':'idempotent'} begin`,async()=>{
+  const f=fixture(),id=await f.begin(legacy);
+  const p=await f.flow().publish(f.args(id),f.device);
+  assert.match(p.url,/#id=[a-f0-9]{32}$/);
+  assert.equal((await f.flow().publish(f.args(id),f.device)).already_published,true);
+  assert.equal((await f.flow().revoke({id},f.device)).revoked,true);
+  assert.equal(f.store.objects.size,0);
+  assert.equal(f.store.states.get(id).value.phase,"revoked");
+  f.store.stage.set(id,f.bytes); // A still-valid old presigned PUT is harmless.
+  await rejects(f.flow().publish(f.args(id),f.device),410,"PUBLICATION_REVOKED");
+  assert.equal(f.store.objects.size,0);
+});
+
+test("lost begin response and restart return the original ID and original creation time",async()=>{
+  const f=fixture(),first=await f.begin(); f.setTime(5000000);
+  const retry=await f.flow().begin(f.body,f.device);
+  assert.equal(retry.id,first);assert.equal(retry.request_id,f.body.request_id);
+  assert.equal(f.store.begins.size,1);assert.equal(f.store.states.size,1);
+  assert.equal(f.store.states.get(first).value.created_at,1000);
+});
+for(const point of ["putBegin","putState","signUpload"])test(`begin recovers after lost ${point} response`,async()=>{
+  const f=fixture();f.store.after[point]=()=>{delete f.store.after[point];lost();};
+  try{await f.flow().begin(f.body,f.device);}catch(e){assert.equal(e.message,"synthetic lost network response");}
+  const ticket=await f.flow().begin(f.body,f.device);
+  assert.equal(f.store.begins.size,1);assert.equal(f.store.states.size,1);
+  assert.equal(f.store.states.has(ticket.id),true);
+});
+test("concurrent begin callers never create a losing control ID",async()=>{
+  const f=fixture();const results=await Promise.all(Array.from({length:8},()=>f.flow().begin(f.body,f.device)));
+  assert.equal(new Set(results.map(r=>r.id)).size,1);
+  assert.equal(f.store.begins.size,1);assert.equal(f.store.states.size,1);
+});
+test("idempotency key binds size, MD5 and SHA-256, scoped to one device",async()=>{
+  const f=fixture(),id=await f.begin();
+  for(const patch of [{bytes:f.bytes.length+1},{md5_base64:"AQEBAQEBAQEBAQEBAQEBAQ=="},{sha256:"b".repeat(64)}])
+    await rejects(f.flow().begin({...f.body,...patch},f.device),409,"BEGIN_REQUEST_CONFLICT");
+  const other=await f.flow().begin(f.body,"phone2");assert.notEqual(id,other.id);
+  await rejects(f.flow().revoke({id},"phone2"),403,"PUBLICATION_ACCESS_DENIED");
+});
+test("revoked begin mapping is retained and never allocates another ID",async()=>{
+  const f=fixture(),id=await f.begin();await f.flow().revoke({id},f.device);
+  await rejects(f.flow().begin(f.body,f.device),410,"PUBLICATION_REVOKED");
+  assert.equal(f.store.states.size,1);assert.equal(f.store.begins.size,1);
+});
+test("begin_v2 rejects missing/invalid keys and content information before storage writes",async()=>{
+  const f=fixture();
+  for(const patch of [{request_id:undefined},{request_id:[f.body.request_id]},{sha256:undefined},{bytes:MAX+1}])
+    await assert.rejects(f.flow().begin({...f.body,...patch},f.device),e=>e.status===400);
+  assert.equal(f.store.states.size,0);assert.equal(f.store.begins.size,0);
+});
+test("a lost multipart initialization leaves only an uncompleted orphan, not another PDF",async()=>{
+  const f=fixture(),id=await f.begin();
+  f.store.after.startPublication=()=>{delete f.store.after.startPublication;lost();};
+  await assert.rejects(f.flow().publish(f.args(id),f.device));
+  assert.equal(f.store.states.get(id).value.phase,"issued");assert.equal(f.store.objects.size,0);
+  await f.flow().publish(f.args(id),f.device);
+  assert.equal(f.store.objects.size,1);assert.equal(f.store.states.size,1);
+  assert.equal([...f.store.uploads.values()].filter(u=>u.active&&!u.part).length,1);
+});
+test("lost publishing CAS acknowledgement is read back before part upload",async()=>{
+  const f=fixture(),id=await f.begin();
+  f.store.after.putState=(_,value)=>{if(value.phase==="publishing"){delete f.store.after.putState;lost();}};
+  await f.flow().publish(f.args(id),f.device);
+  assert.equal(f.store.calls.startPublication,1);assert.equal(f.store.objects.size,1);
+});
+for(const method of ["writePublicationPart","completePublication"])test(`restart recovers lost ${method} acknowledgement`,async()=>{
+  const f=fixture(),id=await f.begin();
+  f.store.after[method]=()=>{delete f.store.after[method];lost();};
+  await assert.rejects(f.flow().publish(f.args(id),f.device));
+  assert.equal(f.store.states.get(id).value.phase,"publishing");
+  await f.flow().publish(f.args(id),f.device);
+  assert.equal(f.store.states.get(id).value.phase,"published");
+  assert.equal(f.store.calls.startPublication,1);assert.equal(f.store.objects.size,1);
+});
+test("crash before the public write resumes the same upload ID without an age heuristic",async()=>{
+  const f=fixture(),id=await f.begin();
+  f.store.before.writePublicationPart=()=>{delete f.store.before.writePublicationPart;lost();};
+  await assert.rejects(f.flow().publish(f.args(id),f.device));
+  const upload=f.store.states.get(id).value.writer.upload_id;
+  f.setTime(1000000000000);
+  await f.flow().publish(f.args(id),f.device);
+  assert.equal(f.store.states.get(id).value.writer.upload_id,upload);
+  assert.equal(f.store.calls.startPublication,1);
+});
+test("a lost published-state response is idempotent",async()=>{
+  const f=fixture(),id=await f.begin();
+  f.store.after.putState=(_,value)=>{if(value.phase==="published"){delete f.store.after.putState;lost();}};
+  await assert.rejects(f.flow().publish(f.args(id),f.device));
+  assert.equal((await f.flow().publish(f.args(id),f.device)).already_published,true);
+  assert.equal(f.store.calls.completePublication,1);
+});
+for(const method of ["writePublicationPart","completePublication"])test(`revoke fences a delayed ${method} before it can commit`,async()=>{
+  const f=fixture(),id=await f.begin(),started=deferred(),release=deferred();
+  f.store.before[method]=async()=>{delete f.store.before[method];started.resolve();await release.promise;};
+  const running=f.flow().publish(f.args(id),f.device);const result=assert.rejects(running);
+  await started.promise;
+  const writer=f.store.states.get(id).value.writer;
+  assert.equal((await f.flow().revoke({id},f.device)).revoked,true);
+  release.resolve();await result;
+  assert.equal(f.store.objects.size,0);assert.equal(f.store.states.get(id).value.phase,"revoked");
+  await assert.rejects(f.store.completePublication(id,writer.upload_id,'"late"'),e=>e.name==="NoSuchUpload");
+  assert.equal(f.store.objects.size,0);
+});
+test("revoke also wins after public commit but before the original completion response",async()=>{
+  const f=fixture(),id=await f.begin(),committed=deferred(),release=deferred();
+  f.store.after.completePublication=async()=>{delete f.store.after.completePublication;committed.resolve();await release.promise;};
+  const running=f.flow().publish(f.args(id),f.device);const result=assert.rejects(running);
+  await committed.promise;assert.equal(f.store.objects.size,1);
+  await f.flow().revoke({id},f.device);release.resolve();await result;
+  assert.equal(f.store.objects.size,0);assert.equal(f.store.states.get(id).value.phase,"revoked");
+});
+test("parallel publish attempts expose only one object and losing uploads never complete",async()=>{
+  const f=fixture(),id=await f.begin();
+  const results=await Promise.allSettled(Array.from({length:6},()=>f.flow().publish(f.args(id),f.device)));
+  assert.ok(results.some(r=>r.status==="fulfilled"));
+  assert.equal(f.store.objects.size,1);assert.equal(f.store.calls.completePublication,1);
+  assert.equal((await f.flow().publish(f.args(id),f.device)).already_published,true);
+});
+test("parallel revokes and a repeated request retain the tombstone",async()=>{
+  const f=fixture(),id=await f.begin();await f.flow().publish(f.args(id),f.device);
+  const results=await Promise.allSettled(Array.from({length:4},()=>f.flow().revoke({id},f.device)));
+  assert.ok(results.some(r=>r.status==="fulfilled"));
+  assert.equal((await f.flow().revoke({id},f.device)).revoked,true);
+  assert.equal(f.store.states.get(id).value.phase,"revoked");assert.equal(f.store.objects.size,0);
+});
+test("an unconfirmed abort never permits deletion or a successful revoke",async()=>{
+  const f=fixture(),id=await f.begin();await f.flow().publish(f.args(id),f.device);
+  f.store.abortUnconfirmed=true;
+  await rejects(f.flow().revoke({id},f.device),503,"UPLOAD_ABORT_UNCONFIRMED");
+  assert.equal(f.store.objects.size,1);assert.equal(f.store.calls.removePublished,undefined);
+  f.store.abortUnconfirmed=false;await f.flow().revoke({id},f.device);assert.equal(f.store.objects.size,0);
+});
+for(const method of ["removePublished","removeStaging"])test(`lost ${method} response is recovered in revoking`,async()=>{
+  const f=fixture(),id=await f.begin();await f.flow().publish(f.args(id),f.device);
+  f.store.after[method]=()=>{delete f.store.after[method];lost();};
+  await assert.rejects(f.flow().revoke({id},f.device));
+  assert.equal(f.store.states.get(id).value.phase,"revoking");
+  await f.flow().revoke({id},f.device);
+  assert.equal(f.store.states.get(id).value.phase,"revoked");assert.equal(f.store.objects.size,0);
+});
+test("a lost revoked-state acknowledgement never reopens publication",async()=>{
+  const f=fixture(),id=await f.begin();
+  f.store.after.putState=(_,r)=>{if(r.phase==="revoked"){delete f.store.after.putState;lost();}};
+  await assert.rejects(f.flow().revoke({id},f.device));
+  assert.equal((await f.flow().revoke({id},f.device)).revoked,true);
+  await rejects(f.flow().publish(f.args(id),f.device),410,"PUBLICATION_REVOKED");
+});
+test("missing staging can still be safely revoked from publishing",async()=>{
+  const f=fixture(),id=await f.begin();f.store.before.writePublicationPart=()=>{delete f.store.before.writePublicationPart;lost();};
+  await assert.rejects(f.flow().publish(f.args(id),f.device));f.store.stage.delete(id);
+  await rejects(f.flow().publish(f.args(id),f.device),404,"UPLOADED_PDF_MISSING");
+  await f.flow().revoke({id},f.device);assert.equal(f.store.objects.size,0);
+});
+test("an externally aborted upload rotates only after fencing, and keeps the publication ID",async()=>{
+  const f=fixture(),id=await f.begin();f.store.before.writePublicationPart=()=>{delete f.store.before.writePublicationPart;lost();};
+  await assert.rejects(f.flow().publish(f.args(id),f.device));
+  const writer=f.store.states.get(id).value.writer;
+  await f.store.abortPublication(id,writer.upload_id);
+  await rejects(f.flow().publish(f.args(id),f.device),409,"PUBLICATION_RETRY_SAME_ID");
+  await f.flow().publish(f.args(id),f.device);
+  assert.equal(f.store.states.size,1);assert.equal(f.store.objects.size,1);
+  await assert.rejects(f.store.completePublication(id,writer.upload_id,'"late"'),e=>e.name==="NoSuchUpload");
+});
+test("foreign object tokens block publication and deletion; hashes come from actual bytes",async()=>{
+  const f=fixture(),id=await f.begin();f.store.before.writePublicationPart=()=>{delete f.store.before.writePublicationPart;lost();};
+  await assert.rejects(f.flow().publish(f.args(id),f.device));
+  const body=Buffer.from("foreign data");f.store.objects.set(id,{body,token:"e".repeat(32),etag:'"foreign"'});
+  await rejects(f.flow().publish(f.args(id),f.device),409,"PUBLISHED_OBJECT_CONFLICT");
+  await rejects(f.flow().revoke({id},f.device),409,"PUBLISHED_OBJECT_CONFLICT");
+  assert.deepEqual(f.store.objects.get(id).body,body);assert.equal(f.store.calls.removePublished,undefined);
+});
+test("wrong SHA, wrong size, invalid PDF and missing ETag fail before public writes",async()=>{
+  const f=fixture(),id=await f.begin();
+  await rejects(f.flow().publish({...f.args(id),sha256:"b".repeat(64)},f.device),409,"CONTENT_ALREADY_PUBLISHED");
+  f.store.stage.set(id,Buffer.alloc(f.bytes.length,1));
+  await rejects(f.flow().publish(f.args(id),f.device),422,"HASH_MISMATCH");
+  f.store.stage.set(id,f.bytes);f.store.parsePdf=async()=>false;
+  await rejects(f.flow().publish(f.args(id),f.device),422,"INVALID_PDF");
+  delete f.store.states.get(id).etag;
+  await rejects(f.flow().revoke({id},f.device),503,"CONTROL_RECORD_INVALID");
+  assert.equal(f.store.calls.startPublication,undefined);
+});
+
+async function legacyFixture(withObject,options={}) {
+  const f=fixture(options),id=await f.begin(true);
+  const row=f.store.states.get(id);row.value={...row.value,v:1,phase:"publishing",sha256:hash(f.bytes)};
+  if(withObject)f.store.objects.set(id,{body:Buffer.from(f.bytes),etag:'"legacy"'});
+  return {...f,id};
+}
+test("old raw-PUT publishing never unlocks just because it is old or a matching object exists",async()=>{
+  for(const exists of [true,false]) {
+    const f=await legacyFixture(exists);f.setTime(1000000000000);
+    await rejects(f.flow().publish(f.args(f.id),f.device),409,"LEGACY_WRITERS_NOT_DRAINED");
+    await rejects(f.flow().revoke({id:f.id},f.device),409,"LEGACY_WRITERS_NOT_DRAINED");
+    assert.equal(f.store.states.get(f.id).value.v,1);
   }
-  return {store,flow,begin,bytes};
-}
-async function mustReject(p,status,code) {
-  await assert.rejects(p,e=>e.status===status&&e.code===code);
-}
-test("begin, publish, retry, revoke; revoked URL never revives",async()=>{
-  const {store,flow,begin,bytes}=fixture();const id=await begin();
-  const a=await flow.publish({id,bytes:bytes.length,sha256:HASH},"phone1");
-  assert.match(a.url,/#id=[a-f0-9]{32}$/);
-  assert.equal(store.published.size,1);
-  const b=await flow.publish({id,bytes:bytes.length,sha256:HASH},"phone1");
-  assert.equal(b.already_published,true);
-  assert.equal((await flow.revoke({id},"phone1")).revoked,true);
-  assert.equal(store.published.size,0);
-  assert.equal(store.state.get(id).value.phase,"revoked");
-  await mustReject(flow.publish({id,bytes:bytes.length,sha256:HASH},"phone1"),
-    410,"PUBLICATION_REVOKED");
 });
-test("revoke before publish denies even a late signed upload",async()=>{
-  const {store,flow,begin,bytes}=fixture();const id=await begin();
-  await flow.revoke({id},"phone1");
-  store.stage.set(id,bytes); // an old signed URL is reused after delete
-  await mustReject(flow.publish({id,bytes:bytes.length,sha256:HASH},"phone1"),
-    410,"PUBLICATION_REVOKED");
+for(const exists of [true,false])test(`drained legacy publishing recovers ${exists?'the actual object':'the missing write'} with the original ID`,async()=>{
+  const f=await legacyFixture(exists,{legacyWritesDrained:true});
+  await f.flow().publish(f.args(f.id),f.device);
+  assert.equal(f.store.states.get(f.id).value.v,2);assert.equal(f.store.states.size,1);
+  assert.equal(f.store.calls.startPublication||0,exists?0:1);
+  await f.flow().revoke({id:f.id},f.device);assert.equal(f.store.objects.size,0);
 });
-test("concurrent publication permits only one state transition",async()=>{
-  const {store,flow,begin,bytes}=fixture();const id=await begin();
-  const arg={id,bytes:bytes.length,sha256:HASH};
-  const outcomes=await Promise.allSettled([
-    flow.publish(arg,"phone1"),flow.publish(arg,"phone1")
-  ]);
-  assert.equal(outcomes.filter(x=>x.status==="fulfilled").length,1);
-  assert.equal(store.published.size,1);
+test("drained legacy publishing with expired staging can be revoked without creating a PDF",async()=>{
+  const f=await legacyFixture(false,{legacyWritesDrained:true});f.store.stage.delete(f.id);
+  await f.flow().revoke({id:f.id},f.device);
+  assert.equal(f.store.states.get(f.id).value.phase,"revoked");assert.equal(f.store.calls.startPublication,undefined);
 });
-test("revoke cannot overtake an in-flight publication",async()=>{
-  const {store,flow,begin,bytes}=fixture();const id=await begin();
-  let notify,unblock;
-  const started=new Promise(resolve=>notify=resolve);
-  store.beforeWrite=async()=>{notify();await new Promise(resolve=>unblock=resolve);};
-  const running=flow.publish({id,bytes:bytes.length,sha256:HASH},"phone1");
-  await started;
-  await mustReject(flow.revoke({id},"phone1"),409,"PUBLISHING_IN_PROGRESS_RETRY");
-  unblock();await running;
-  assert.equal((await flow.revoke({id},"phone1")).revoked,true);
-  assert.equal(store.published.size,0);
+test("legacy object mismatch cannot be automatically adopted or deleted",async()=>{
+  const f=await legacyFixture(true,{legacyWritesDrained:true});f.store.objects.get(f.id).body=Buffer.from("wrong file");
+  await rejects(f.flow().publish(f.args(f.id),f.device),409,"PUBLISHED_OBJECT_CONFLICT");
+  await rejects(f.flow().revoke({id:f.id},f.device),409,"PUBLISHED_OBJECT_CONFLICT");
+  assert.equal(f.store.calls.removePublished,undefined);assert.equal(f.store.states.get(f.id).value.v,1);
 });
-test("lost response with public object remains blocked until safe recovery",async()=>{
-  const {store,flow,begin,bytes}=fixture();const id=await begin();
-  const original=store.putPublishedOnce;
-  store.putPublishedOnce=async(...args)=>{await original(...args);throw new Error("lost response");};
-  const arg={id,bytes:bytes.length,sha256:HASH};
-  await assert.rejects(flow.publish(arg,"phone1"));
-  await mustReject(flow.publish(arg,"phone1"),409,"PUBLICATION_IN_PROGRESS");
-  await mustReject(flow.revoke({id},"phone1"),409,"PUBLISHING_IN_PROGRESS_RETRY");
-  assert.equal(store.state.get(id).value.phase,"publishing");
+test("installed client can still read an already-published v1 object without migration",async()=>{
+  const f=await legacyFixture(true);f.store.states.get(f.id).value.phase="published";
+  assert.equal((await f.flow().publish(f.args(f.id),f.device)).already_published,true);
+  assert.equal(f.store.states.get(f.id).value.v,1);
 });
-test("failed publication without public object stays blocked safely",async()=>{
-  const {store,flow,begin,bytes}=fixture();const id=await begin();
-  store.putPublishedOnce=async()=>{throw new Error("network timeout");};
-  const arg={id,bytes:bytes.length,sha256:HASH};
-  await assert.rejects(flow.publish(arg,"phone1"));
-  await mustReject(flow.revoke({id},"phone1"),409,"PUBLISHING_IN_PROGRESS_RETRY");
-  await mustReject(flow.publish(arg,"phone1"),409,"PUBLICATION_IN_PROGRESS");
-});
-test("retry revocation after interrupted delete",async()=>{
-  const {store,flow,begin,bytes}=fixture();const id=await begin();
-  await flow.publish({id,bytes:bytes.length,sha256:HASH},"phone1");
-  const original=store.removePublished;let first=true;
-  store.removePublished=async(id)=>{
-    if(first){first=false;throw new Error("temporary failure");}
-    return original(id);
-  };
-  await assert.rejects(flow.revoke({id},"phone1"));
-  assert.equal(store.state.get(id).value.phase,"revoking");
-  assert.equal((await flow.revoke({id},"phone1")).revoked,true);
-  assert.equal(store.state.get(id).value.phase,"revoked");
-});
-test("reject wrong hash, foreign device and oversized uploads",async()=>{
-  const {store,flow,begin,bytes}=fixture();const id=await begin();
-  await mustReject(flow.publish({id,bytes:bytes.length,sha256:"b".repeat(64)},
-    "phone1"),422,"HASH_MISMATCH");
-  await mustReject(flow.revoke({id},"other-phone"),403,"PUBLICATION_ACCESS_DENIED");
-  await mustReject(flow.begin({bytes:MAX+1,md5_base64:MD5},"phone1"),
-    400,"INVALID_FILE_INFO");
-  store.stage.set(id,new Uint8Array(22));
-  await mustReject(flow.publish({id,bytes:bytes.length,sha256:HASH},"phone1"),
-    422,"UPLOADED_FILE_MISMATCH");
-});
-

@@ -1,8 +1,8 @@
 {
   "name": "kuzovpro-simple-pdf-gateway",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "One Cloud Function, one Object Storage bucket, signed upload and browser PDF links",
+  "description": "Recoverable PDF gateway: one Cloud Function, two existing Object Storage buckets",
   "main": "index.js",
   "engines": {
     "node": ">=22"
