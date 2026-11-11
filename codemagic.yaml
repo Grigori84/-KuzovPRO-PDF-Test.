@@ -1,0 +1,37 @@
+workflows:
+  gateway-test-debug:
+    name: КузовPRO — тест шлюза (debug APK)
+    instance_type: mac_mini_m2
+    max_build_duration: 45
+    working_directory: android-gateway-test
+    environment:
+      java: 17
+      node: 22
+    scripts:
+      - name: Android SDK 35
+        script: |
+          set -eu
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" > local.properties
+      - name: Server offline tests from PR 1
+        script: |
+          set -eu
+          cd ../simple-gateway
+          npm ci --ignore-scripts --no-audit --no-fund
+          STAGING_BUCKET=offline-private PUBLIC_BUCKET=offline-public npm test
+      - name: Unit tests, lint and debug APK
+        script: |
+          set -eu
+          chmod +x gradlew
+          ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest
+      - name: APK checksum
+        script: |
+          set -eu
+          cd app/build/outputs/apk/debug
+          shasum -a 256 app-debug.apk > app-debug.apk.sha256
+    artifacts:
+      - android-gateway-test/app/build/outputs/apk/debug/app-debug.apk
+      - android-gateway-test/app/build/outputs/apk/debug/app-debug.apk.sha256
+      - android-gateway-test/app/build/reports/tests/testDebugUnitTest/**
+      - android-gateway-test/app/build/reports/lint-results-debug.html
+    # Manual workflow only: no trigger, cloud deployment, distribution or publishing.
