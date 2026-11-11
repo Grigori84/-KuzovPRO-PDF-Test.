@@ -9,13 +9,14 @@ const noUpload=e=>e?.name==="NoSuchUpload"||e?.code==="NoSuchUpload";
 const precondition=e=>e?.name==="PreconditionFailed"||[409,412].includes(e?.$metadata?.httpStatusCode);
 const check=(value,code)=>{if(!value)throw new FlowError(503,code);};
 
-async function runRecoveryChecks(store,bytes,{viewerUrl,newId,uploadStaging}={}) {
+async function runRecoveryChecks(store,bytes,{viewerUrl,newId,uploadStaging,onTestId=()=>{}}={}) {
   const flow=()=>makeWorkflow(store,{viewerUrl,newId});
   const rows=[],checks=[];
   const sha256=digest("sha256",bytes,"hex"),md5_base64=digest("md5",bytes,"base64");
   async function fresh() {
     const ticket=await flow().begin({bytes:bytes.length,md5_base64},DEVICE);
-    const row={id:ticket.id,tokens:new Set(),uploads:new Set()};rows.push(row);return row;
+    const row={id:ticket.id,tokens:new Set(),uploads:new Set()};rows.push(row);
+    onTestId(row.id);return row;
   }
   async function writer(row) {
     const token=newId(),upload=await store.startPublication(row.id,sha256,token);
@@ -35,6 +36,7 @@ async function runRecoveryChecks(store,bytes,{viewerUrl,newId,uploadStaging}={})
     const body={operation:"begin_v2",request_id:newId(),bytes:bytes.length,md5_base64,sha256};
     const first=await flow().begin(body,DEVICE);
     const row={id:first.id,tokens:new Set(),uploads:new Set()};rows.push(row);
+    onTestId(row.id); // Safe synthetic ID survives a hard invocation timeout in private logs.
     const retry=await flow().begin(body,DEVICE);
     check(first.id===retry.id&&retry.request_id===body.request_id,"SELFTEST_BEGIN_DUPLICATED");
     checks.push("lost_begin_same_id");

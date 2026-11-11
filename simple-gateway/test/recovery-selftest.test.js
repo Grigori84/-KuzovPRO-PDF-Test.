@@ -10,7 +10,14 @@ function setup(){
     async uploadStaging(ticket,bytes){f.store.stage.set(ticket.id,bytes);}}};
 }
 test("private recovery check verifies the real storage contract model and retains only its tombstones",async()=>{
-  const f=setup(),result=await runRecoveryChecks(f.store,f.bytes,f.options);
+  const f=setup(),recorded=new Set(),start=f.store.startPublication;
+  f.options.onTestId=id=>recorded.add(id);
+  f.store.startPublication=async(id,...args)=>{
+    assert.ok(recorded.has(id),"synthetic ID must be reported before any public writer starts");
+    return start(id,...args);
+  };
+  const result=await runRecoveryChecks(f.store,f.bytes,f.options);
+  assert.deepEqual([...recorded],result.test_ids);
   assert.equal(result.result,"PASS");assert.ok(result.checks.includes("abort_complete_race_x3"));
   assert.equal(f.store.objects.size,0);assert.equal(f.store.stage.size,0);
   assert.ok([...f.store.states.values()].every(r=>r.value.phase==="revoked"));

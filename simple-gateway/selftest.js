@@ -165,6 +165,7 @@ module.exports.handler=async event=>{
       if(process.env.GATEWAY_ENABLED==="true")throw new FlowError(503,"RECOVERY_SELFTEST_REQUIRES_DISABLED_GATEWAY");
       const result=await runRecoveryChecks(storage(),await artificialPdf(),{
         viewerUrl:VIEWER,newId:()=>randomBytes(16).toString("hex"),
+        onTestId:id=>console.info("pdf_recovery_synthetic_id",id),
         async uploadStaging(ticket,bytes){
           const url=new URL(ticket.upload_url);
           if(url.protocol!=="https:"||url.hostname!=="storage.yandexcloud.net")throw new FlowError(503,"UNEXPECTED_PUT_HOST");
