@@ -1,0 +1,22 @@
+name: PDF gateway recovery tests
+on:
+  pull_request:
+    paths: ['simple-gateway/**', '.github/workflows/pdf-recovery-tests.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-fault-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: simple-gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: simple-gateway/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test

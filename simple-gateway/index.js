@@ -2,7 +2,9 @@
 // DRAFT: one function, two existing buckets. Keep GATEWAY_ENABLED=false
 // until integration checks against Yandex Object Storage have passed.
 const {randomBytes,createHash,createPublicKey,verify}=require("node:crypto");
-const {S3Client,PutObjectCommand,GetObjectCommand,HeadObjectCommand,DeleteObjectCommand}=require("@aws-sdk/client-s3");
+const {S3Client,PutObjectCommand,GetObjectCommand,HeadObjectCommand,DeleteObjectCommand,
+  CreateMultipartUploadCommand,UploadPartCommand,CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,ListPartsCommand,ListMultipartUploadsCommand}=require("@aws-sdk/client-s3");
 const {getSignedUrl}=require("@aws-sdk/s3-request-presigner");
 const {PDFDocument,ParseSpeeds}=require("pdf-lib");
 const {makeWorkflow,FlowError}=require("./workflow");
@@ -18,7 +20,9 @@ const respond=(statusCode,data)=>({
   body:JSON.stringify(data)
 });
 const sha=b=>createHash("sha256").update(b).digest("hex");
-const notFound=e=>e?.name==="NoSuchKey"||e?.name==="NotFound"||e?.$metadata?.httpStatusCode===404;
+// A missing/misconfigured bucket must never be mistaken for a deleted PDF.
+const notFound=e=>e?.name==="NoSuchKey"||e?.name==="NotFound";
+const noUpload=e=>e?.name==="NoSuchUpload"||e?.code==="NoSuchUpload";
 const collision=e=>e?.code==="PRECONDITION_FAILED"||
   e?.$metadata?.httpStatusCode===412||e?.$metadata?.httpStatusCode===409;
 function devices(){
@@ -70,12 +74,43 @@ function adapter(s3){
       if(size>limit){v.Body.destroy?.();throw new FlowError(413,"TOO_LARGE");}
       parts.push(chunk);
     }
-    return {body:Buffer.concat(parts),etag:v.ETag,contentType:v.ContentType};
+    return {body:Buffer.concat(parts),etag:v.ETag,contentType:v.ContentType,metadata:v.Metadata||{}};
   }
   async function remove(bucket,key){
     return s3.send(new DeleteObjectCommand({Bucket:bucket,Key:key}));
   }
   return {
+    async getDiagnosticRun(runId){
+      if(!/^[a-f0-9]{32}$/.test(runId))throw Error("INVALID_DIAGNOSTIC_RUN_ID");
+      const d=await read(STAGING,"selftest-runs/"+runId+".json",16384);
+      if(d&&!d.etag)throw Error("DIAGNOSTIC_ETAG_MISSING");
+      return d?{value:JSON.parse(d.body.toString("utf8")),etag:d.etag}:null;
+    },
+    async putDiagnosticRun(runId,value,condition){
+      if(!/^[a-f0-9]{32}$/.test(runId)||(!condition?.ifMatch&&condition?.ifNoneMatch!=="*"))
+        throw Error("INVALID_DIAGNOSTIC_CAS");
+      const result=await put(STAGING,"selftest-runs/"+runId+".json",Buffer.from(JSON.stringify(value)),
+        {ContentType:"application/json",CacheControl:"no-store",
+          ...(condition.ifMatch?{IfMatch:condition.ifMatch}:{IfNoneMatch:"*"})});
+      if(!result.ETag)throw Error("DIAGNOSTIC_ETAG_MISSING");
+      return {value,etag:result.ETag};
+    },
+    async listPublicationUploads(id){
+      if(!/^[a-f0-9]{32}$/.test(id))throw Error("INVALID_DIAGNOSTIC_ID");
+      const key="estimates/"+id+".pdf",ids=[];let keyMarker,uploadMarker;
+      for(let page=0;page<20;page++){
+        const result=await s3.send(new ListMultipartUploadsCommand({Bucket:PUBLIC,Prefix:key,
+          ...(keyMarker?{KeyMarker:keyMarker,UploadIdMarker:uploadMarker}:{})}));
+        for(const item of result.Uploads||[]){
+          if(item.Key===key){if(!item.UploadId)throw Error("INVALID_UPLOAD_LIST");ids.push(item.UploadId);}
+        }
+        if(!result.IsTruncated)return [...new Set(ids)];
+        if(!result.NextKeyMarker||!result.NextUploadIdMarker||
+          (result.NextKeyMarker===keyMarker&&result.NextUploadIdMarker===uploadMarker))throw Error("INVALID_UPLOAD_PAGINATION");
+        keyMarker=result.NextKeyMarker;uploadMarker=result.NextUploadIdMarker;
+      }
+      throw Error("UPLOAD_LIST_TOO_LONG");
+    },
     async reserveNonce(device,nonce){
       try{
         await put(STAGING,"auth-nonces/"+device+"/"+nonce,Buffer.from("1"),
@@ -100,7 +135,20 @@ function adapter(s3){
     },
     async getState(id){
       const d=await read(STAGING,"control/"+id+".json",4096);
+      if(d&&!d.etag)throw new FlowError(503,"CONTROL_ETAG_MISSING");
       return d?{value:JSON.parse(d.body.toString("utf8")),etag:d.etag}:null;
+    },
+    async getBegin(device,requestId){
+      const d=await read(STAGING,"begin-requests/"+device+"/"+requestId+".json",4096);
+      if(d&&!d.etag)throw new FlowError(503,"BEGIN_ETAG_MISSING");
+      return d?{value:JSON.parse(d.body.toString("utf8")),etag:d.etag}:null;
+    },
+    async putBegin(device,requestId,value){
+      const raw=Buffer.from(JSON.stringify(value));
+      const result=await put(STAGING,"begin-requests/"+device+"/"+requestId+".json",raw,
+        {IfNoneMatch:"*",ContentType:"application/json",CacheControl:"no-store"});
+      if(!result.ETag)throw Error("MISSING_ETAG");
+      return {value,etag:result.ETag};
     },
     async signUpload(id,bytes,md5){
       const headers={"Content-Type":"application/pdf",
@@ -134,12 +182,35 @@ function adapter(s3){
         return pages>=1&&pages<=100;
       }catch(_){return false;}
     },
-    async putPublishedOnce(id,bytes,hash){
-      await put(PUBLIC,"estimates/"+id+".pdf",bytes,{
+    async startPublication(id,hash,token){
+      const result=await s3.send(new CreateMultipartUploadCommand({
+        Bucket:PUBLIC,Key:"estimates/"+id+".pdf",
         ContentType:"application/pdf",ContentDisposition:"inline",
-        CacheControl:"no-store, max-age=0",Metadata:{sha256:hash},
-        IfNoneMatch:"*"
-      });
+        CacheControl:"no-store, max-age=0",Metadata:{sha256:hash,"publication-token":token}
+      }));
+      return result.UploadId;
+    },
+    async writePublicationPart(id,uploadId,bytes){
+      const result=await s3.send(new UploadPartCommand({
+        Bucket:PUBLIC,Key:"estimates/"+id+".pdf",UploadId:uploadId,PartNumber:1,
+        Body:bytes,ContentLength:bytes.length,ContentMD5:createHash("md5").update(bytes).digest("base64")
+      }));
+      if(!result.ETag)throw Error("MISSING_PART_ETAG");
+      return result.ETag;
+    },
+    async completePublication(id,uploadId,etag){
+      await s3.send(new CompleteMultipartUploadCommand({
+        Bucket:PUBLIC,Key:"estimates/"+id+".pdf",UploadId:uploadId,IfNoneMatch:"*",
+        MultipartUpload:{Parts:[{PartNumber:1,ETag:etag}]}
+      }));
+    },
+    async abortPublication(id,uploadId){
+      const input={Bucket:PUBLIC,Key:"estimates/"+id+".pdf",UploadId:uploadId};
+      try{await s3.send(new AbortMultipartUploadCommand(input));}
+      catch(e){if(!noUpload(e))throw e;}
+      // Abort acknowledgement alone is insufficient with in-flight part uploads.
+      try{await s3.send(new ListPartsCommand(input));return false;}
+      catch(e){if(noUpload(e))return true;throw e;}
     },
     async headPublished(id){
       const key="estimates/"+id+".pdf";
@@ -148,14 +219,14 @@ function adapter(s3){
       if(!v.ETag || !Number.isSafeInteger(v.ContentLength) || v.ContentLength > 10*1024*1024)
         throw Error("INVALID_PUBLISHED_OBJECT");
       const data=await read(PUBLIC,key,10*1024*1024,v.ETag);
-      if(!data || data.body.length!==v.ContentLength)throw Error("PUBLICATION_UNCONFIRMED");
-      return {bytes:data.body.length,sha256:sha(data.body)};
+      if(!data || data.etag!==v.ETag || data.body.length!==v.ContentLength)throw Error("PUBLICATION_UNCONFIRMED");
+      return {bytes:data.body.length,sha256:sha(data.body),etag:data.etag,token:data.metadata["publication-token"]};
     },
     async removePublished(id){await remove(PUBLIC,"estimates/"+id+".pdf");},
     async removeStaging(id){await remove(STAGING,"staging/"+id+".pdf");}
   };
 }
-module.exports.handler=async event=>{
+function makeHandler({storageFactory,workflowOptions={}}={}){return async event=>{
   const method=(event?.httpMethod||event?.requestContext?.http?.method||"").toUpperCase();
   if(method!=="POST")return respond(405,{error:"METHOD_NOT_ALLOWED"});
   if(process.env.GATEWAY_ENABLED!=="true")
@@ -167,12 +238,11 @@ module.exports.handler=async event=>{
     if(Buffer.byteLength(raw,"utf8")>4096)return respond(413,{error:"REQUEST_TOO_LARGE"});
     const user=auth(event,raw,devices());
     if(!user)return respond(401,{error:"UNAUTHORIZED"});
-    const s3=new S3Client({
+    const storage=storageFactory ? storageFactory() : adapter(new S3Client({
       endpoint:"https://storage.yandexcloud.net",region:"ru-central1",
-      forcePathStyle:true,requestChecksumCalculation:"WHEN_REQUIRED",
+      forcePathStyle:true,requestChecksumCalculation:"WHEN_REQUIRED",maxAttempts:1,
       credentials:ephemeralCredentials
-    });
-    const storage=adapter(s3);
+    }));
     if(!(await storage.reserveNonce(user.device,user.nonce)))
       return respond(409,{error:"REPLAYED_REQUEST"});
     let body;
@@ -180,19 +250,27 @@ module.exports.handler=async event=>{
     if(!body||Array.isArray(body)||typeof body!=="object")
       return respond(400,{error:"INVALID_JSON"});
     const workflow=makeWorkflow(storage,{
-      viewerUrl:VIEWER,newId:()=>randomBytes(16).toString("hex")
+      viewerUrl:VIEWER,newId:()=>randomBytes(16).toString("hex"),
+      legacyWritesDrained:process.env.LEGACY_WRITERS_DRAINED==="true",...workflowOptions
     });
-    if(body.operation==="begin")return respond(200,await workflow.begin(body,user.device));
+    if(body.operation==="begin"||body.operation==="begin_v2")return respond(200,await workflow.begin(body,user.device));
     if(body.operation==="publish")return respond(200,await workflow.publish(body,user.device));
     if(body.operation==="revoke")return respond(200,await workflow.revoke(body,user.device));
     return respond(400,{error:"UNKNOWN_OPERATION"});
   }catch(e){
-    if(e instanceof FlowError)return respond(e.status,{error:e.code});
+    if(e instanceof FlowError){
+      const details={};
+      for(const key of ["id","request_id"])
+        if(typeof e.details[key]==="string"&&/^[0-9a-f]{32}$/.test(e.details[key]))details[key]=e.details[key];
+      if(e.details.revoked===true)details.revoked=true;
+      return respond(e.status,{error:e.code,...details});
+    }
     console.error("pdf_gateway_failure",e?.name||"Error");
     return respond(503,{error:"GATEWAY_UNAVAILABLE"});
   }
-};
+};}
+module.exports.handler=makeHandler();
 
 // Internal unit-test seam only; not an HTTP route.
-module.exports.__testing = {auth,adapter};
+module.exports.__testing = {auth,adapter,makeHandler};
 

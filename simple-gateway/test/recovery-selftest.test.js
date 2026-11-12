@@ -1,0 +1,44 @@
+"use strict";
+const test=require("node:test");
+const assert=require("node:assert/strict");
+const {fixture}=require("../test-support/memory-store");
+const {runRecoveryChecks}=require("../recovery-selftest");
+const {handler}=require("../selftest");
+function setup(){
+  const f=fixture(),options={viewerUrl:"https://example.invalid/client.html",runId:"a".repeat(32),
+    async uploadStaging(ticket,bytes){f.store.stage.set(ticket.id,bytes);}};
+  const call=action=>runRecoveryChecks(f.store,action==="prepare"?f.bytes:null,{...options,action});
+  return {...f,options,call};
+}
+async function run(f){await f.call("prepare");return f.call("run");}
+test("private recovery check retains a durable ID plan before every control write",async()=>{
+  const f=setup();
+  f.store.before.putState=async id=>assert.ok(f.store.runs.get(f.options.runId).value.rows.some(r=>r.id===id));
+  const result=await run(f);
+  assert.equal(result.result,"PASS");assert.ok(result.checks.includes("abort_complete_race_x3"));
+  assert.equal(f.store.objects.size,0);assert.equal(f.store.stage.size,0);
+  assert.ok([...f.store.states.values()].every(r=>r.value.phase==="revoked"));
+  assert.ok([...f.store.uploads.values()].every(u=>!u.active));
+  assert.equal(f.store.runs.get(f.options.runId).value.phase,"cleaned");
+});
+test("private check fails if provider ignores conditional completion, without touching foreign IDs",async()=>{
+  const f=setup(),normal=f.store.completePublication;
+  f.store.objects.set("e".repeat(32),{body:Buffer.from("unrelated"),token:"unrelated",etag:'"foreign"'});
+  f.store.completePublication=async(id,upload,part)=>{
+    if(f.store.objects.has(id))f.store.objects.delete(id); // Deliberately broken storage provider.
+    return normal(id,upload,part);
+  };
+  await assert.rejects(run(f),e=>e.code==="SELFTEST_CONDITIONAL_COMPLETE_UNSUPPORTED");
+  assert.equal(f.store.objects.size,1);assert.equal(f.store.objects.get("e".repeat(32)).body.toString(),"unrelated");
+});
+test("an unconfirmed abort cannot produce a passing private check",async()=>{
+  const f=setup();f.store.abortUnconfirmed=true;
+  await assert.rejects(run(f),e=>e.code==="UPLOAD_ABORT_UNCONFIRMED");
+});
+test("selftest cannot be invoked through an HTTP Gateway envelope, even if its flag is true",async()=>{
+  process.env.SELFTEST_ENABLED="true";
+  try {
+    const response=await handler({httpMethod:"POST",operation:"recovery"});
+    assert.equal(response.statusCode,403);assert.equal(JSON.parse(response.body).error,"PRIVATE_SELFTEST_ONLY");
+  }finally{delete process.env.SELFTEST_ENABLED;}
+});

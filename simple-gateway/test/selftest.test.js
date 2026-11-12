@@ -1,6 +1,8 @@
 "use strict";
 const test=require("node:test");
 const assert=require("node:assert/strict");
+process.env.STAGING_BUCKET="offline-selftest-staging";
+process.env.PUBLIC_BUCKET="offline-selftest-public";
 const {handler}=require("../selftest");
 
 test("selftest refuses invocation unless explicitly enabled",async()=>{
@@ -33,4 +35,10 @@ test("unexpected test operation is rejected without network",async()=>{
       if(v===undefined)delete process.env[k]; else process.env[k]=v;
     }
   }
+});
+test("legacy unjournaled diagnostic allocators are no longer accepted",async()=>{
+  process.env.SELFTEST_ENABLED="true";
+  try{for(const operation of ["upload","publish","revoke"]){
+    const result=await handler({operation});assert.equal(result.statusCode,400);
+  }}finally{delete process.env.SELFTEST_ENABLED;}
 });
