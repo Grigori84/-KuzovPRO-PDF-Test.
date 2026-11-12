@@ -10,13 +10,21 @@ function deferred() { let resolve; const promise = new Promise(r => { resolve = 
 // A linearizable S3 contract model, with faults either side of every commit.
 // An upload ID is consumed once by complete/abort; it cannot create another object.
 function memoryStore() {
-  const states = new Map(), begins = new Map(), stage = new Map(), objects = new Map(), uploads = new Map(), nonces = new Set();
+  const states = new Map(), begins = new Map(), runs = new Map(), stage = new Map(), objects = new Map(), uploads = new Map(), nonces = new Set();
   const calls = {}, before = {}, after = {};
   let sequence = 0;
   const etag = () => '"version-' + (++sequence) + '"';
   const missingUpload = () => { throw storageError("NoSuchUpload", 404); };
   const precondition = () => { throw storageError("PreconditionFailed", 412); };
   const methods = {
+    getDiagnosticRun(id){const r=runs.get(id);return r?clone(r):null;},
+    putDiagnosticRun(id,value,condition){
+      const old=runs.get(id);
+      if(condition.ifNoneMatch==="*"&&old)precondition();
+      if(condition.ifMatch&&old?.etag!==condition.ifMatch)precondition();
+      const row={value:clone(value),etag:etag()};runs.set(id,row);return clone(row);
+    },
+    listPublicationUploads(id){return [...uploads].filter(([,u])=>u.id===id&&u.active).map(([key])=>key);},
     reserveNonce(device, nonce) { const key=device+'/'+nonce; if(nonces.has(key))return false; nonces.add(key); return true; },
     getBegin(device, key) { const row=begins.get(device+'/'+key); return row ? clone(row) : null; },
     putBegin(device, key, value) {
@@ -61,7 +69,7 @@ function memoryStore() {
     removePublished(id) { objects.delete(id); },
     removeStaging(id) { stage.delete(id); }
   };
-  const store={states,begins,stage,objects,uploads,nonces,calls,before,after,abortUnconfirmed:false};
+  const store={states,begins,runs,stage,objects,uploads,nonces,calls,before,after,abortUnconfirmed:false};
   for(const [name,fn] of Object.entries(methods))store[name]=async (...args)=>{
     calls[name]=(calls[name]||0)+1;
     if(before[name])await before[name](...args);

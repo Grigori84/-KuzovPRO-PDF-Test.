@@ -43,7 +43,7 @@ sha256sum build/*.zip
 
 Проверить source_commit, runtime, зависимости и SHA в соседнем manifest; ZIP
 должен содержать `index.js`, `workflow.js`, `ephemeral.js`, `selftest.js`,
-`recovery-selftest.js`, package/lock, `node_modules`, `RELEASE-MANIFEST.json`.
+`recovery-selftest.js`, `recovery-journal.js`, package/lock, `node_modules`, `RELEASE-MANIFEST.json`.
 Текущий кодовый commit и воспроизводимый ZIP зафиксированы в
 [RECOVERY_VALIDATION_RU.md](RECOVERY_VALIDATION_RU.md). Документационные коммиты
 меняют source_commit/имя нового ZIP, это допустимо при повторной сборке/сверке.
@@ -51,61 +51,102 @@ sha256sum build/*.zip
 Не собирать из нескольких PR, не править ZIP в консоли и не использовать
 плавающий `npm install`. Не добавлять статические IAM/S3-ключи в архив.
 
-## 3. После отдельного разрешения — только приватная проверка кандидата
+## 3. После отдельного разрешения — приватная диагностика с durable run-id
 
-1. Создать **новую неизменяемую версию существующей функции** из проверенного
-   ZIP с прежней service account/secret binding и прежними двумя бакетами:
-   `STAGING_BUCKET=kuzovpro-staging-test-84`, `PUBLIC_BUCKET=kuzovpro-pdf-test-84`,
-   прежние VIEWER_URL и DEVICE_PUBLIC_KEYS_JSON. Runtime Node.js 22.
-   Не менять права/бакеты, не делать функцию публичной.
-2. Диагностическая версия: entrypoint **`selftest.handler`**,
-   `SELFTEST_ENABLED=true`, `GATEWAY_ENABLED=false`,
-   `LEGACY_WRITERS_DRAINED=false` (либо не задан). Для новой приватной
-   диагностической версии предусмотреть timeout180с; действующую версию
-   не редактировать. Route остаётся disabled.
-   Не направлять API Gateway на selftest. Использовать **прямой приватный IAM-вызов**
-   точной версии в доверенной консоли, передав raw JSON:
+**Уточнение 12.11.2026:** журналы Cloud Functions недоступны; доступ к Monium
+для этой функции не доказан. Логи и ответ зависшего вызова не используются как
+единственный реестр. Сейчас ничего не развёртывать и selftest не запускать:
+порядок ниже применим только после отдельного разрешения владельца.
+
+1. Создать новую приватную диагностическую версию **существующей** функции из
+   нового ZIP с `recovery-journal.js`. Прежние account/secret bindings/два бакета
+   сохранить. Node.js 22, `selftest.handler`, `SELFTEST_ENABLED=true`,
+   `GATEWAY_ENABLED=false`, **`LEGACY_WRITERS_DRAINED=false`**. Для новой версии
+   timeout 180с. Маршрут по-прежнему `gateway-disabled`; не направлять его на
+   selftest, не менять IAM/бакеты/ключи. Старый ZIP d9cddbe не содержит реестра
+   и для этой процедуры непригоден.
+2. **До вызова** локально создать случайный run-id (32 hex) (например,
+   `python3 -c 'import secrets; print(secrets.token_hex(16))'`), сохранить его в
+   журнале Work вместе с точной version ID. Один run-id — один запуск; не терять
+   и не заменять его при timeout. Вкладка Testing → No template/custom raw JSON;
+   только прямой приватный IAM-вызов точной версии, без HTTP-обёртки:
 
    ```json
-   {"operation":"recovery"}
+   {"operation":"recovery","action":"prepare","run_id":"<сохранённый32hex>"}
    ```
 
-   Не HTTP-обёртку, не произвольные ID, не реальные PDF. Обработчик отвергает
-   HTTP-shaped события даже при включённом SELFTEST_ENABLED.
-3. Это диагностическое действие создаёт и удаляет только свои синтетические PDF
-   в прежних бакетах; сохраняет их control/request tombstone. Получить HTTP 200,
-   JSON `result:PASS`, `runtime:v22...`, SDK **3.1166.0**, pdf-lib **1.17.1**
-   для зафиксированного lock и все checks:
-   `lost_begin_same_id`, `lost_complete_response_recovered`, `revoke_tombstone`,
+   Prepare сохраняет **весь** план пяти ID/request_id/токенов в закрытом бакете
+   `selftest-runs/<run_id>.json` через If-None-Match, до любого begin/control,
+   PUT/MPU. Здесь ещё нет тестовых control/PDF/MPU. Даже при потере ответа путь
+   известен заранее; повтор prepare возвращает прежний план, не создаёт новые ID.
+   Старые незарегистрированные команды upload/publish/revoke теперь отклоняются.
+3. Прочитать `selftest-runs/<run_id>.json` через существующий Object Storage UI
+   и сохранить список `rows[].id` в Work. Не выгружать секреты/клиентские файлы.
+   Выполнить **read-only**:
+
+   ```json
+   {"operation":"recovery","action":"status","run_id":"<тот же32hex>"}
+   ```
+
+   Status возвращает все 5 ID, control phase/absent, наличие staging/public и
+   список multipart UploadId **по точному ключу каждого ID**, включая поздние
+   загрузки с потерянным ответом Create. Выдача PUT-ссылок при status отсутствует.
+   Реестр не удалять/не подвергать Lifecycle; проверить существующие правила
+   без их изменения. Для первого запуска phase=prepared и все объекты отсутствуют.
+   **Стоп до run:** нельзя прочесть/проверить реестр, status/list вернул403/5xx,
+   не совпал список ID, найдены чужие объекты или правило удаления selftest-runs.
+   Не расширять права автоматически. Monium не нужен для продолжения, если
+   эти существующие read-only пути работают; иначе диагностика заблокирована.
+4. Только после успешного шага3:
+
+   ```json
+   {"operation":"recovery","action":"run","run_id":"<тот же32hex>"}
+   ```
+
+   CAS prepared→running разрешает **один** запуск. Повтор run после timeout
+   запрещён409: дальше только status/cleanup того же run-id. Нет новых ID при
+   повторе. Журнал намерений Create пишется до запроса; UploadId — до первого
+   part/Complete. Ошибка/таймаут между control commit и возвратом ID не теряет ID:
+   он уже был в плане. Status/cleanup работают без исходной памяти процесса.
+5. Нормальный результат: HTTP200, `result:PASS`, все прежние checks
+   (`lost_begin_same_id`, `lost_complete_response_recovered`, `revoke_tombstone`,
    `conditional_complete_no_overwrite`, `abort_complete_race_x3`,
-   `late_complete_cannot_recreate`. Все три флага должны быть true:
-   `known_uploads_fenced`, `public_absence_verified`, `tombstones_retained`.
-   По возвращённым **синтетическим** test_ids дополнительно проверить uncached
-   анонимный GET `https://storage.yandexcloud.net/kuzovpro-pdf-test-84/estimates/<id>.pdf`
-   → 404 и соответствующие control.phase=revoked.
-4. Проверки должны подтвердить **на действующем Yandex Object Storage**:
-   conditional CompleteMultipartUpload не перезаписывает существующий объект,
-   Abort + ListParts/NoSuchUpload закрывают upload и пересекающийся Complete не
-   воскрешает удалённый объект; ETag/CAS/заголовки staging действительно работают.
-   Изучить документацию/ответ поддержки о семантике этих гонок: три опыта не
-   доказывают все возможные задержки провайдера. Нужен подтверждённый контракт
-   одноразового upload/fence, а не только удачная последовательность ответов.
-5. 403, 5xx, unsupported header/операция, неполный cleanup или любой FAIL —
-   **остановка**, route disabled. Не расширять IAM для прохождения теста без
-   отдельного разрешения. Сохранить только безопасные коды ошибки/test_ids.
-   Диагностика не принимает клиентские ID и не разрешает массовую очистку.
-   При жёстком timeout синтетические IDs доступны в приватном логе
-   `pdf_recovery_synthetic_id` (записываются до публичных writers). Cleanup не
-   считается выполненным: сверить именно эти IDs/их uploads и terminal fence;
-   не удалять объект, пока возможность поздней записи не исключена. Если
-   установить все uploads/их исход нельзя — остановиться и привлечь поддержку.
-   При потере ответа CreateMultipartUpload возможен неизвестный **пустой** upload:
-   данные/Complete не отправляются до durable control CAS. Его учёт/уборку
-   согласовать отдельно; не добавлять Lifecycle или общую очистку автоматически.
-6. После диагностики создать из **того же ZIP** обычную приватную версию:
-   entrypoint **`index.handler`**, `SELFTEST_ENABLED=false`,
-   `GATEWAY_ENABLED=false`. Прямой HTTP-shaped POST должен вернуть 503.
-   Никогда не оставлять diagnostic entrypoint в рабочей версии.
+   `late_complete_cannot_recreate`), `runtime:v22...`, SDK3.1166.0/pdf-lib1.17.1.
+   Три флага true: known_uploads_fenced/public_absence_verified/tombstones_retained.
+   Дополнительный status: phase=cleaned, все control=revoked, staging/public
+   отсутствуют, upload_ids пусты. Uncached анонимный GET всех 5 публичных ключей
+   →404. Сами control, begin mappings и selftest-runs сохраняются.
+6. При зависании, timeout, потерянном ответе или любом FAIL: **не повторять run
+   и не начинать другой run-id**, прочитать прежний реестр/status, затем:
+
+   ```json
+   {"operation":"recovery","action":"cleanup","run_id":"<тот же32hex>"}
+   ```
+
+   Cleanup CAS-переводит запуск в cleaning, запрещает его продолжение, для ещё
+   не созданных control сохраняет tombstone штатным v2-отзывом. Поздний begin
+   не создаст обходной ID. Известные/однозначно найденные MPU требуют подтверждённый
+   Abort+ListParts/NoSuchUpload перед удалением принадлежащего тесту PDF.
+   Отложенный Complete не получает разрешения на повторную запись. При потере
+   ответа cleanup повторять **cleanup того же run-id**, не править JSON вручную.
+7. **Точные стоп-условия восстановления:** SELFTEST_PENDING_IO_RECHECK означает,
+   что Create/PUT ещё мог не завершиться; отсутствие объекта само по себе не
+   доказывает завершение. Не считать CLEANED/PASS, оставить cleaning/route disabled.
+   После фактического завершения запроса повторить status/cleanup: пустой MPU
+   находится по запланированному точному ключу, завершившийся staging PUT — по
+   реальным байтам/SHA. Если pending не разрешается или исход нельзя установить,
+   остановиться и запросить поддержку; таймер не снимает барьер. Неизвестный
+   дополнительный upload, чужой control/PDF, неподтверждённый Abort, ошибки CAS,
+   403/5xx — также стоп; никакой массовой очистки или IAM-изменений. Каждый ключ
+   остаётся учтённым в сохранённом реестре, даже если запрос завершится позднее.
+8. CLEANED означает очистку, **не успешность прерванных contract-checks**. После
+   анализа причины новый проверочный запуск допустим только с новым заранее
+   сохранённым run-id и согласованным объёмом. Живые проверки должны подтвердить
+   реальный conditional Complete и терминальный Abort при гонках; три опыта не
+   заменяют контракт/ответ поддержки провайдера. До этого никакой активации.
+9. После испытания обычная приватная версия того же ZIP: `index.handler`,
+   SELFTEST_ENABLED=false/GATEWAY_ENABLED=false. Ни diagnostic entrypoint, ни
+   новый рабочий тег сейчас не направлять в API Gateway.
 
 ## 4. Старые control v1: отдельный обязательный барьер
 
@@ -117,7 +158,9 @@ Raw PutObject старой функции нельзя отменить чере
 других triggers/ручных вызовов и всех старых выполняющихся invocations, а также
 терминальное завершение отправленных ими S3 PUT/SDK-повторов. Нужны сведения
 логов/провайдера об исходе запросов; простого «подождали N минут» недостаточно.
-Если доказать нельзя — оставить flag false и шлюз disabled, сообщить блокер.
+Если доказать нельзя — оставить flag false и шлюз disabled, сообщить блокер
+**миграции v1**. Это не запрещает новую приватную диагностику/публикации v2:
+они работают при false без миграции v1. Не поднимать флаг ради selftest.
 
 Только после доказанного drain и отдельного разрешения создать следующую версию
 с `LEGACY_WRITERS_DRAINED=true`. Флаг задаёт оператор на сервере, не клиент.

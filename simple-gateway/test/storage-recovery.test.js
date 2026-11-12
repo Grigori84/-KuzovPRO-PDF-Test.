@@ -80,3 +80,22 @@ test("AWS SDK really serializes If-None-Match for multipart complete without a n
     assert.equal(captured.method,"POST");assert.equal(captured.hostname,"storage.invalid");
   }finally{client.destroy();}
 });
+test("diagnostic registry uses private CAS and exact-key multipart discovery paginates without foreign uploads",async()=>{
+  const calls=[],id="a".repeat(32),run="b".repeat(32);
+  const store=adapter({async send(c){calls.push(c);
+    if(c instanceof sdk.PutObjectCommand)return {ETag:'"registry"'};
+    if(c instanceof sdk.ListMultipartUploadsCommand){
+      if(!c.input.KeyMarker)return {Uploads:[{Key:"estimates/"+id+".pdf",UploadId:"one"},
+        {Key:"estimates/"+id+".pdf-other",UploadId:"foreign"}],IsTruncated:true,
+        NextKeyMarker:"marker",NextUploadIdMarker:"one"};
+      return {Uploads:[{Key:"estimates/"+id+".pdf",UploadId:"two"}],IsTruncated:false};
+    }
+    throw Error("unexpected command");
+  }});
+  await store.putDiagnosticRun(run,{v:1},{ifNoneMatch:"*"});
+  assert.equal(calls[0].input.Key,"selftest-runs/"+run+".json");
+  assert.equal(calls[0].input.Bucket,"offline-storage-private");assert.equal(calls[0].input.IfNoneMatch,"*");
+  await assert.rejects(store.putDiagnosticRun(run,{},{}),/INVALID_DIAGNOSTIC_CAS/);
+  assert.deepEqual(await store.listPublicationUploads(id),["one","two"]);
+  assert.equal(calls[1].input.Prefix,"estimates/"+id+".pdf");assert.equal(calls[2].input.UploadIdMarker,"one");
+});

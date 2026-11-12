@@ -36,3 +36,9 @@ test("unexpected test operation is rejected without network",async()=>{
     }
   }
 });
+test("legacy unjournaled diagnostic allocators are no longer accepted",async()=>{
+  process.env.SELFTEST_ENABLED="true";
+  try{for(const operation of ["upload","publish","revoke"]){
+    const result=await handler({operation});assert.equal(result.statusCode,400);
+  }}finally{delete process.env.SELFTEST_ENABLED;}
+});

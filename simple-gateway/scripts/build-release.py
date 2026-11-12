@@ -10,7 +10,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 SOURCES = ("index.js", "workflow.js", "ephemeral.js", "selftest.js",
-           "recovery-selftest.js", "package.json", "package-lock.json")
+           "recovery-selftest.js", "recovery-journal.js", "package.json", "package-lock.json")
 
 
 def git(*args):

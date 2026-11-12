@@ -5,23 +5,21 @@ const {fixture}=require("../test-support/memory-store");
 const {runRecoveryChecks}=require("../recovery-selftest");
 const {handler}=require("../selftest");
 function setup(){
-  const f=fixture();let n=0;
-  return {...f,options:{viewerUrl:"https://example.invalid/client.html",newId:()=> (++n).toString(16).padStart(32,"0"),
-    async uploadStaging(ticket,bytes){f.store.stage.set(ticket.id,bytes);}}};
+  const f=fixture(),options={viewerUrl:"https://example.invalid/client.html",runId:"a".repeat(32),
+    async uploadStaging(ticket,bytes){f.store.stage.set(ticket.id,bytes);}};
+  const call=action=>runRecoveryChecks(f.store,action==="prepare"?f.bytes:null,{...options,action});
+  return {...f,options,call};
 }
-test("private recovery check verifies the real storage contract model and retains only its tombstones",async()=>{
-  const f=setup(),recorded=new Set(),start=f.store.startPublication;
-  f.options.onTestId=id=>recorded.add(id);
-  f.store.startPublication=async(id,...args)=>{
-    assert.ok(recorded.has(id),"synthetic ID must be reported before any public writer starts");
-    return start(id,...args);
-  };
-  const result=await runRecoveryChecks(f.store,f.bytes,f.options);
-  assert.deepEqual([...recorded],result.test_ids);
+async function run(f){await f.call("prepare");return f.call("run");}
+test("private recovery check retains a durable ID plan before every control write",async()=>{
+  const f=setup();
+  f.store.before.putState=async id=>assert.ok(f.store.runs.get(f.options.runId).value.rows.some(r=>r.id===id));
+  const result=await run(f);
   assert.equal(result.result,"PASS");assert.ok(result.checks.includes("abort_complete_race_x3"));
   assert.equal(f.store.objects.size,0);assert.equal(f.store.stage.size,0);
   assert.ok([...f.store.states.values()].every(r=>r.value.phase==="revoked"));
   assert.ok([...f.store.uploads.values()].every(u=>!u.active));
+  assert.equal(f.store.runs.get(f.options.runId).value.phase,"cleaned");
 });
 test("private check fails if provider ignores conditional completion, without touching foreign IDs",async()=>{
   const f=setup(),normal=f.store.completePublication;
@@ -30,12 +28,12 @@ test("private check fails if provider ignores conditional completion, without to
     if(f.store.objects.has(id))f.store.objects.delete(id); // Deliberately broken storage provider.
     return normal(id,upload,part);
   };
-  await assert.rejects(runRecoveryChecks(f.store,f.bytes,f.options),e=>e.code==="SELFTEST_CONDITIONAL_COMPLETE_UNSUPPORTED");
+  await assert.rejects(run(f),e=>e.code==="SELFTEST_CONDITIONAL_COMPLETE_UNSUPPORTED");
   assert.equal(f.store.objects.size,1);assert.equal(f.store.objects.get("e".repeat(32)).body.toString(),"unrelated");
 });
 test("an unconfirmed abort cannot produce a passing private check",async()=>{
   const f=setup();f.store.abortUnconfirmed=true;
-  await assert.rejects(runRecoveryChecks(f.store,f.bytes,f.options),e=>e.code==="UPLOAD_ABORT_UNCONFIRMED");
+  await assert.rejects(run(f),e=>e.code==="UPLOAD_ABORT_UNCONFIRMED");
 });
 test("selftest cannot be invoked through an HTTP Gateway envelope, even if its flag is true",async()=>{
   process.env.SELFTEST_ENABLED="true";

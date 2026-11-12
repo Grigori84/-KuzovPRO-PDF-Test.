@@ -4,7 +4,7 @@
 const {randomBytes,createHash,createPublicKey,verify}=require("node:crypto");
 const {S3Client,PutObjectCommand,GetObjectCommand,HeadObjectCommand,DeleteObjectCommand,
   CreateMultipartUploadCommand,UploadPartCommand,CompleteMultipartUploadCommand,
-  AbortMultipartUploadCommand,ListPartsCommand}=require("@aws-sdk/client-s3");
+  AbortMultipartUploadCommand,ListPartsCommand,ListMultipartUploadsCommand}=require("@aws-sdk/client-s3");
 const {getSignedUrl}=require("@aws-sdk/s3-request-presigner");
 const {PDFDocument,ParseSpeeds}=require("pdf-lib");
 const {makeWorkflow,FlowError}=require("./workflow");
@@ -80,6 +80,37 @@ function adapter(s3){
     return s3.send(new DeleteObjectCommand({Bucket:bucket,Key:key}));
   }
   return {
+    async getDiagnosticRun(runId){
+      if(!/^[a-f0-9]{32}$/.test(runId))throw Error("INVALID_DIAGNOSTIC_RUN_ID");
+      const d=await read(STAGING,"selftest-runs/"+runId+".json",16384);
+      if(d&&!d.etag)throw Error("DIAGNOSTIC_ETAG_MISSING");
+      return d?{value:JSON.parse(d.body.toString("utf8")),etag:d.etag}:null;
+    },
+    async putDiagnosticRun(runId,value,condition){
+      if(!/^[a-f0-9]{32}$/.test(runId)||(!condition?.ifMatch&&condition?.ifNoneMatch!=="*"))
+        throw Error("INVALID_DIAGNOSTIC_CAS");
+      const result=await put(STAGING,"selftest-runs/"+runId+".json",Buffer.from(JSON.stringify(value)),
+        {ContentType:"application/json",CacheControl:"no-store",
+          ...(condition.ifMatch?{IfMatch:condition.ifMatch}:{IfNoneMatch:"*"})});
+      if(!result.ETag)throw Error("DIAGNOSTIC_ETAG_MISSING");
+      return {value,etag:result.ETag};
+    },
+    async listPublicationUploads(id){
+      if(!/^[a-f0-9]{32}$/.test(id))throw Error("INVALID_DIAGNOSTIC_ID");
+      const key="estimates/"+id+".pdf",ids=[];let keyMarker,uploadMarker;
+      for(let page=0;page<20;page++){
+        const result=await s3.send(new ListMultipartUploadsCommand({Bucket:PUBLIC,Prefix:key,
+          ...(keyMarker?{KeyMarker:keyMarker,UploadIdMarker:uploadMarker}:{})}));
+        for(const item of result.Uploads||[]){
+          if(item.Key===key){if(!item.UploadId)throw Error("INVALID_UPLOAD_LIST");ids.push(item.UploadId);}
+        }
+        if(!result.IsTruncated)return [...new Set(ids)];
+        if(!result.NextKeyMarker||!result.NextUploadIdMarker||
+          (result.NextKeyMarker===keyMarker&&result.NextUploadIdMarker===uploadMarker))throw Error("INVALID_UPLOAD_PAGINATION");
+        keyMarker=result.NextKeyMarker;uploadMarker=result.NextUploadIdMarker;
+      }
+      throw Error("UPLOAD_LIST_TOO_LONG");
+    },
     async reserveNonce(device,nonce){
       try{
         await put(STAGING,"auth-nonces/"+device+"/"+nonce,Buffer.from("1"),

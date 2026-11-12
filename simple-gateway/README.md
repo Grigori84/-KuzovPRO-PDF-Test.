@@ -78,14 +78,24 @@ npm test
 python3 scripts/build-release.py
 ```
 
-Node.js 22.23.5: **73 теста, 73 pass, 0 failures/skips** с настоящими SDK/pdf-lib
+Node.js 22.23.5: **89 тестов, 89 pass, 0 failures/skips** с настоящими SDK/pdf-lib
 и имитацией хранилища/сетевых сбоев. Подробности и границы доказательств:
 [RECOVERY_VALIDATION_RU.md](RECOVERY_VALIDATION_RU.md).
 CI `PDF gateway recovery tests` выполняет этот набор без облачных секретов;
 сам GitHub job здесь не засчитывается как выполненный.
 Пакет фиксируется `package-lock.json`; локальный ZIP содержит runtime-файлы,
-production node_modules и manifest, не тесты, ключи или deploy-команды.
+production node_modules, recovery-journal.js и manifest, не тесты, ключи или deploy-команды.
 
 **Порядок Work, частная проверка Object Storage и откат:**
 [WORK_RECOVERY_ROLLOUT_RU.md](WORK_RECOVERY_ROLLOUT_RU.md).
 Старые инструкции сохранены только как [история v1](README_V1_HISTORY.md).
+
+## Уточнение 12.11: диагностика без Cloud Logging
+
+Recovery selftest теперь требует заранее сохранённый run_id и действия
+prepare → status → run; при timeout — status/cleanup того же run_id. Полный
+план ID хранится в `selftest-runs/<run_id>.json` **до** создания control/PDF/MPU.
+Файл и tombstone не удаляются. Нужны прежние права чтения/записи закрытого
+бакета и list multipart по точным тестовым ключам;403 означает стоп, не запрос
+расширенияIAM. Неразрешённый Create/PUT не считается успешной очисткой.
+Боевые API/Abort/CAS/v1-409 не изменены. Точные payload/стоп-условия — в регламенте Work.
