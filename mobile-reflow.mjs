@@ -178,7 +178,86 @@ async function imageCrops(pdf, photoTop) {
   return {brand,photo:max-min>55?picture.toDataURL("image/jpeg",.86):null};
 }
 
-export async function buildMobileEstimate(pdf,host,pdfUrl) {
+
+/**
+ * Accessible photo zoom with its own browser history entry.
+ * Android's Back gesture pops that entry and closes the image instead of
+ * leaving the estimate. Closing with X, backdrop, picture or Escape uses the
+ * same history entry. The visible URL/hash never changes.
+ */
+export function attachPhotoLightbox(pic,{win=window,doc=document}={}) {
+  const overlay=doc.createElement("div");
+  overlay.className="m-photo-overlay";
+  overlay.hidden=true;
+  overlay.setAttribute("role","dialog");
+  overlay.setAttribute("aria-modal","true");
+  overlay.setAttribute("aria-label","Фотография автомобиля");
+  const closeButton=doc.createElement("button");
+  closeButton.className="m-photo-close";
+  closeButton.type="button";
+  closeButton.textContent="×";
+  closeButton.setAttribute("aria-label","Закрыть фотографию");
+  const large=doc.createElement("img");
+  large.src=pic.src;
+  large.alt="Фотография автомобиля крупно";
+  overlay.append(large,closeButton);
+  doc.body.append(overlay);
+
+  pic.setAttribute("role","button");
+  pic.setAttribute("tabindex","0");
+  pic.setAttribute("aria-label","Увеличить фотографию");
+
+  let previousFocus=null,previousOverflow=null,historyArmed=false;
+  const historyKey="__expertPhotoOpen";
+  function hide(){
+    if(overlay.hidden)return;
+    overlay.hidden=true;
+    doc.body.style.overflow=previousOverflow ?? "";
+    historyArmed=false;
+    previousFocus?.focus?.({preventScroll:true});
+    previousFocus=null;
+  }
+  function open(){
+    if(!overlay.hidden)return;
+    previousFocus=doc.activeElement;
+    previousOverflow=doc.body.style.overflow;
+    overlay.hidden=false;
+    doc.body.style.overflow="hidden";
+    // Use the *same* #id=<token> URL: there is no extra network request or
+    // change to the customer's existing PDF access token.
+    try {
+      win.history.pushState({[historyKey]:true},"",win.location.href);
+      historyArmed=true;
+    } catch(_) {
+      // In restricted embeds, X/tap-to-close still work.
+      historyArmed=false;
+    }
+    closeButton.focus?.({preventScroll:true});
+  }
+  function close(){
+    if(overlay.hidden)return;
+    const popCurrent=historyArmed && win.history.state?.[historyKey]===true;
+    hide();
+    if(popCurrent)win.history.back();
+  }
+  pic.addEventListener("click",open);
+  pic.addEventListener("keydown",event=>{
+    if(event.key==="Enter" || event.key===" "){event.preventDefault();open();}
+  });
+  closeButton.addEventListener("click",close);
+  large.addEventListener("click",close);
+  overlay.addEventListener("click",event=>{if(event.target===overlay)close();});
+  win.addEventListener("keydown",event=>{
+    if(event.key==="Escape" && !overlay.hidden){event.preventDefault();close();}
+  });
+  win.addEventListener("popstate",()=>{
+    // A system Back gesture consumes the overlay history entry.
+    if(!overlay.hidden)hide();
+  });
+  return {open,close,overlay};
+}
+
+export async function buildMobileEstimate(pdf,host) {
   if(pdf.numPages>40)return false;
   const texts=[];
   for(let pageNo=1;pageNo<=pdf.numPages;pageNo++){
@@ -201,6 +280,7 @@ export async function buildMobileEstimate(pdf,host,pdfUrl) {
   article.append(el("h1",null,"Смета на кузовной ремонт"));
   article.append(el("p","m-desc","Состав работ и стоимость ремонта"));
   const card=el("section","m-car");
+  let photoNode=null;
   const details=el("div","m-car-details");
   details.append(el("div","m-eyebrow","АВТОМОБИЛЬ"),el("h2",null,model.car));
   details.append(el("p",null,"Клиент: "+model.clientName));
@@ -209,7 +289,7 @@ export async function buildMobileEstimate(pdf,host,pdfUrl) {
   card.append(details);
   if(images.photo){
     const pic=el("img","m-photo");pic.src=images.photo;pic.alt="Фото автомобиля";
-    pic.addEventListener("click",()=>pic.classList.toggle("m-photo-large"));
+    photoNode=pic;
     card.append(pic);
   }
   article.append(card,el("h2","m-section","Перечень работ"));
@@ -233,9 +313,7 @@ export async function buildMobileEstimate(pdf,host,pdfUrl) {
   }
   const foot=el("footer","m-foot","ЭКСПЕРТ · Кузовной сервис · Смета №"+model.number);
   article.append(foot);
-  const download=el("a","m-download","Открыть PDF");
-  download.href=pdfUrl;download.target="_blank";download.rel="noopener noreferrer";
-  const toolbar=el("div","m-downloadbar");toolbar.append(download);
-  host.replaceChildren(toolbar,article);
+  host.replaceChildren(article);
+  if(photoNode)attachPhotoLightbox(photoNode);
   return true;
 }
