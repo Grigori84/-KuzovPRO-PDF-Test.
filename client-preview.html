@@ -88,13 +88,14 @@ async function render(){
   const availableWidth=Math.min(880,Math.max(280,host.clientWidth-12));
   // Keep high-density phone text crisp without exhausting memory on long PDFs.
   // The PDF itself stays vector; this limits only on-screen bitmap canvases.
-  const pixelBudget=Math.min(4_000_000,Math.max(1_100_000,24_000_000/pdf.numPages));
+  // Strict canvas allocation ceiling, including on long multi-page PDFs.
+  const pixelBudget=Math.min(4_000_000,24_000_000/pdf.numPages);
   for(let n=1;n<=pdf.numPages;n++){
     const page=await pdf.getPage(n);
     const initial=page.getViewport({scale:1});
     const view=page.getViewport({scale:zoom*availableWidth/initial.width});
     const ratio=Math.min(window.devicePixelRatio||1,2.6,
-      Math.max(1,Math.sqrt(pixelBudget/(view.width*view.height))));
+      Math.sqrt(pixelBudget/(view.width*view.height)));
     const canvas=document.createElement("canvas");
     canvas.width=Math.round(view.width*ratio);canvas.height=Math.round(view.height*ratio);canvas.style.width=Math.round(view.width)+"px";canvas.style.height=Math.round(view.height)+"px";
     const context=canvas.getContext("2d",{alpha:false});
