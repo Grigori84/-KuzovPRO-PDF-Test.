@@ -137,15 +137,18 @@ export function parseEstimatePages(pages) {
   // extract, showing even one perfectly readable clause is legally misleading.
   // Reflow only the known complete standard three-section contract. Workshops
   // with edited/additional conditions use the faithful original PDF fallback.
-  const expectedTerms=[
-    "Скрытые повреждения",
-    "Отключение аккумулятора",
-    "Последствия отключения АКБ"
+  // Whitelist the exact unmodified 3-section wording from Android
+  // EstimateConditions.current. Any custom term or incomplete paragraph goes
+  // to the original immutable PDF instead of an unverified HTML paraphrase.
+  const expectedLegal=[
+    {title:"Скрытые повреждения",text:"При разборке или дефектовке автомобиля могут обнаружиться скрытые повреждения. Дополнительные работы, материалы и изменение согласованной стоимости возможны только после предварительного согласования с клиентом. Без согласования дополнительные работы не выполняются"},
+    {title:"Отключение аккумулятора",text:"Для обеспечения безопасности и защиты электрооборудования во время ремонта или хранения автомобиля может потребоваться отключение аккумуляторной батареи (АКБ). Решение принимается с учётом технических особенностей автомобиля и правил безопасности мастерской"},
+    {title:"Последствия отключения АКБ",text:"После подключения АКБ возможен сброс часов, настроек мультимедиа и стеклоподъёмников, а также появление предупреждений на панели приборов. При необходимости дополнительные диагностика и настройка предварительно согласуются с клиентом"}
   ];
   const lower=s=>normalize(s).toLocaleLowerCase("ru-RU");
-  if(clauses.length!==expectedTerms.length ||
-     clauses.some((c,i)=>lower(c.title)!==lower(expectedTerms[i]) ||
-       normalize(c.body.join(" ")).length<35))return null;
+  if(clauses.length!==expectedLegal.length ||
+     clauses.some((c,i)=>lower(c.title)!==lower(expectedLegal[i].title) ||
+       lower(c.body.join(" "))!==lower(expectedLegal[i].text)))return null;
 
   return {
     number,date,car,clientName,phone:phoneValue,workCount,works:jobs,
