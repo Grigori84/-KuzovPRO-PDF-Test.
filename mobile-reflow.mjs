@@ -133,8 +133,19 @@ export function parseEstimatePages(pages) {
     previous={p:line.p,y:line.y};
   }
   if(clauses.length<1 || clauses.length>20 || clauses.some(c=>!c.title||!c.body.join(" ")))return null;
-  const allClauseText=clauses.map(c=>c.title+" "+c.body.join(" ")).join(" ");
-  if(allClauseText.length<55)return null;
+  // A PDF text layer has no authoritative count of conditions. With a partial
+  // extract, showing even one perfectly readable clause is legally misleading.
+  // Reflow only the known complete standard three-section contract. Workshops
+  // with edited/additional conditions use the faithful original PDF fallback.
+  const expectedTerms=[
+    "Скрытые повреждения",
+    "Отключение аккумулятора",
+    "Последствия отключения АКБ"
+  ];
+  const lower=s=>normalize(s).toLocaleLowerCase("ru-RU");
+  if(clauses.length!==expectedTerms.length ||
+     clauses.some((c,i)=>lower(c.title)!==lower(expectedTerms[i]) ||
+       normalize(c.body.join(" ")).length<35))return null;
 
   return {
     number,date,car,clientName,phone:phoneValue,workCount,works:jobs,
