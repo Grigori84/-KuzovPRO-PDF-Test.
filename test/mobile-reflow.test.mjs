@@ -87,7 +87,7 @@ test("two clauses or a substituted heading trigger the original PDF fallback",()
 
 test("custom legal terms use PDF until a completeness-proof protocol exists",()=>{
   const custom=fixture();
-  const extra=custom[1].lines[4];
+  const extra=custom[1].lines.find(line=>line.y===295);
   extra.items[0].t="Особые условия";
   extra.text=extra.items.map(i=>i.t).join(" ");
   assert.equal(parseEstimatePages(custom),null);
