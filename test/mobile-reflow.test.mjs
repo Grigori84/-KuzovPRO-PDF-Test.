@@ -29,13 +29,13 @@ function fixture(price=676) {
       line(47,piece("ЭКСПЕРТ",32,47,"bold"),piece("Смета №18/4",500,47)),
       line(104,piece("Важные условия ремонта",32,104,"bold"),piece("Перед согласованием",510,104)),
       line(137,piece("Скрытые повреждения",52,137,"bold")),
-      line(169,piece("При разборке могут обнаружиться скрытые повреждения.",52,169)),
-      line(187,piece("Все дополнительные работы согласовываются с клиентом.",52,187)),
+      line(169,piece("При разборке или дефектовке автомобиля могут обнаружиться скрытые повреждения.",52,169)),
+      line(187,piece("Дополнительные работы, материалы и изменение согласованной стоимости возможны только после предварительного согласования с клиентом. Без согласования дополнительные работы не выполняются",52,187)),
       line(225,piece("Отключение аккумулятора",52,225,"bold")),
-      line(257,piece("Для безопасности может потребоваться отключение АКБ.",52,257)),
+      line(257,piece("Для обеспечения безопасности и защиты электрооборудования во время ремонта или хранения автомобиля может потребоваться отключение аккумуляторной батареи (АКБ). Решение принимается с учётом технических особенностей автомобиля и правил безопасности мастерской",52,257)),
       line(295,piece("Последствия отключения АКБ",52,295,"bold")),
-      line(327,piece("После подключения могут сброситься настройки и часы.",52,327)),
-      line(345,piece("Дополнительная диагностика согласовывается с клиентом.",52,345))
+      line(327,piece("После подключения АКБ возможен сброс часов, настроек мультимедиа и стеклоподъёмников, а также появление предупреждений на панели приборов. При необходимости дополнительные диагностика и настройка предварительно согласуются с клиентом",52,327)),
+      
     ]}
   ];
 }
@@ -49,7 +49,7 @@ test("reflows full estimate: car, four jobs, exact total, three conditions",()=>
   assert.equal(result?.total,676);
   assert.equal(result?.clauses.length,3);
   assert.match(result.clauses[0].body,/дополнительные работы/);
-  assert.match(result.clauses[2].body,/согласовывается с клиентом/);
+  assert.match(result.clauses[2].body,/согласуются с клиентом/);
 });
 
 test("new plain title also parses, without preliminary label",()=>{
@@ -66,6 +66,39 @@ test("does not silently show inconsistent or incomplete estimates",()=>{
   const empty=fixture();empty[1].lines.splice(3);
   assert.equal(parseEstimatePages(empty),null);
   assert.equal(parseEstimatePages([{lines:[]}]),null);
+});
+
+test("a long first legal clause alone must never appear as full conditions",()=>{
+  const pages=fixture();
+  pages[1].lines=pages[1].lines.filter(line=>line.y<225);
+  assert.equal(parseEstimatePages(pages),null);
+});
+
+test("two clauses or a substituted heading trigger the original PDF fallback",()=>{
+  const two=fixture();
+  two[1].lines=two[1].lines.filter(line=>line.y<295);
+  assert.equal(parseEstimatePages(two),null);
+  const renamed=fixture();
+  const title=renamed[1].lines.find(line=>line.y===225);
+  title.items[0].t="Иные условия";
+  title.text=title.items.map(i=>i.t).join(" ");
+  assert.equal(parseEstimatePages(renamed),null);
+});
+
+test("custom legal terms use PDF until a completeness-proof protocol exists",()=>{
+  const custom=fixture();
+  const extra=custom[1].lines.find(line=>line.y===295);
+  extra.items[0].t="Особые условия";
+  extra.text=extra.items.map(i=>i.t).join(" ");
+  assert.equal(parseEstimatePages(custom),null);
+});
+
+test("even with all three headings, a truncated legal paragraph forces PDF",()=>{
+  const pdf=fixture();
+  const firstParagraphEnd=pdf[1].lines.find(line=>line.y===187);
+  firstParagraphEnd.items[0].t="Без согласования работы не выполняются";
+  firstParagraphEnd.text=firstParagraphEnd.items[0].t;
+  assert.equal(parseEstimatePages(pdf),null);
 });
 
 test("groups extracted text by baseline and x position",()=>{

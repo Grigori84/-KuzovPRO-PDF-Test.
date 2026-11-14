@@ -133,8 +133,22 @@ export function parseEstimatePages(pages) {
     previous={p:line.p,y:line.y};
   }
   if(clauses.length<1 || clauses.length>20 || clauses.some(c=>!c.title||!c.body.join(" ")))return null;
-  const allClauseText=clauses.map(c=>c.title+" "+c.body.join(" ")).join(" ");
-  if(allClauseText.length<55)return null;
+  // A PDF text layer has no authoritative count of conditions. With a partial
+  // extract, showing even one perfectly readable clause is legally misleading.
+  // Reflow only the known complete standard three-section contract. Workshops
+  // with edited/additional conditions use the faithful original PDF fallback.
+  // Whitelist the exact unmodified 3-section wording from Android
+  // EstimateConditions.current. Any custom term or incomplete paragraph goes
+  // to the original immutable PDF instead of an unverified HTML paraphrase.
+  const expectedLegal=[
+    {title:"Скрытые повреждения",text:"При разборке или дефектовке автомобиля могут обнаружиться скрытые повреждения. Дополнительные работы, материалы и изменение согласованной стоимости возможны только после предварительного согласования с клиентом. Без согласования дополнительные работы не выполняются"},
+    {title:"Отключение аккумулятора",text:"Для обеспечения безопасности и защиты электрооборудования во время ремонта или хранения автомобиля может потребоваться отключение аккумуляторной батареи (АКБ). Решение принимается с учётом технических особенностей автомобиля и правил безопасности мастерской"},
+    {title:"Последствия отключения АКБ",text:"После подключения АКБ возможен сброс часов, настроек мультимедиа и стеклоподъёмников, а также появление предупреждений на панели приборов. При необходимости дополнительные диагностика и настройка предварительно согласуются с клиентом"}
+  ];
+  const lower=s=>normalize(s).toLocaleLowerCase("ru-RU");
+  if(clauses.length!==expectedLegal.length ||
+     clauses.some((c,i)=>lower(c.title)!==lower(expectedLegal[i].title) ||
+       lower(c.body.join(" "))!==lower(expectedLegal[i].text)))return null;
 
   return {
     number,date,car,clientName,phone:phoneValue,workCount,works:jobs,
