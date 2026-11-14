@@ -68,6 +68,31 @@ test("does not silently show inconsistent or incomplete estimates",()=>{
   assert.equal(parseEstimatePages([{lines:[]}]),null);
 });
 
+test("a long first legal clause alone must never appear as full conditions",()=>{
+  const pages=fixture();
+  pages[1].lines=pages[1].lines.filter(line=>line.y<225);
+  assert.equal(parseEstimatePages(pages),null);
+});
+
+test("two clauses or a substituted heading trigger the original PDF fallback",()=>{
+  const two=fixture();
+  two[1].lines=two[1].lines.filter(line=>line.y<295);
+  assert.equal(parseEstimatePages(two),null);
+  const renamed=fixture();
+  const title=renamed[1].lines.find(line=>line.y===225);
+  title.items[0].t="Иные условия";
+  title.text=title.items.map(i=>i.t).join(" ");
+  assert.equal(parseEstimatePages(renamed),null);
+});
+
+test("custom legal terms use PDF until a completeness-proof protocol exists",()=>{
+  const custom=fixture();
+  const extra=custom[1].lines[4];
+  extra.items[0].t="Особые условия";
+  extra.text=extra.items.map(i=>i.t).join(" ");
+  assert.equal(parseEstimatePages(custom),null);
+});
+
 test("groups extracted text by baseline and x position",()=>{
   const raw={items:[
     {str:"Ремонт",transform:[1,0,0,1,69,365],width:40},
