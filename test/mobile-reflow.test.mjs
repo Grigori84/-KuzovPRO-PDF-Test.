@@ -93,6 +93,14 @@ test("custom legal terms use PDF until a completeness-proof protocol exists",()=
   assert.equal(parseEstimatePages(custom),null);
 });
 
+test("even with all three headings, a truncated legal paragraph forces PDF",()=>{
+  const pdf=fixture();
+  const firstParagraphEnd=pdf[1].lines.find(line=>line.y===187);
+  firstParagraphEnd.items[0].t="Без согласования работы не выполняются";
+  firstParagraphEnd.text=firstParagraphEnd.items[0].t;
+  assert.equal(parseEstimatePages(pdf),null);
+});
+
 test("groups extracted text by baseline and x position",()=>{
   const raw={items:[
     {str:"Ремонт",transform:[1,0,0,1,69,365],width:40},
