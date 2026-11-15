@@ -12,7 +12,7 @@
 
 const normalize = v => String(v || "").replace(/\s+/g, " ").trim();
 const parsePrice = text => {
-  const m = normalize(text).match(/(-?[\d\s\u00a0\u202f]+(?:[,.]\d{1,2})?)\s*₽/u);
+  const m = normalize(text).match(/^(-?\d[\d ]*(?:[,.]\d{1,2})?)\s*₽$/u);
   return m ? Number(m[1].replace(/[\s\u00a0\u202f]/g, "").replace(",", ".")) : null;
 };
 const rounded = (n, place = 2) => Math.round(n * 10**place) / 10**place;
@@ -43,11 +43,10 @@ export function toLines(content, pageHeight) {
 
 const onPage = (page, cond) => (page?.lines || []).find(cond);
 const pageItem = (page, cond) => (page?.lines || []).flatMap(x=>x.items).find(cond);
-const moneyItems = group => group.items.filter(i=>i.x>=425 && /₽/u.test(i.t));
 const rowNumber = group => group.items.find(i=>i.x<65 && /^\d{1,3}$/.test(i.t));
 
 /**
- * Entire title, all numbered work lines, matching total and all conditions
+ * Entire title, all work lines, matching total and all conditions
  * are required. If a PDF cannot be understood unambiguously, return null
  * and show the *original* PDF without guessing customer information.
  */
@@ -63,9 +62,8 @@ export function parseEstimatePages(pages) {
   const count=pageItem(first,i=>/^Работ:\s*\d+$/i.test(i.t));
   const tableTitle=all.find(l=>l.text.includes("Перечень работ"));
   const conditionsTitle=all.find(l=>l.text.includes("Важные условия ремонта"));
-  const totalLine=all.find(l=>l.text.includes("Итого с материалами"));
-  const totalItem=totalLine?.items.find(i=>/₽/u.test(i.t));
-  if(!number||!date||!carLabel||!client||!count||!tableTitle||!conditionsTitle||!totalLine||!totalItem) return null;
+  const totalLine=all.find(l=>l.items.some(i=>i.x>=43 && i.x<65 && i.t==="Итого с материалами"));
+  if(!number||!date||!carLabel||!client||!count||!tableTitle||!conditionsTitle||!totalLine) return null;
 
   const clientName=normalize(client.t.replace(/^Клиент:\s*/i,""));
   const phoneValue=phone ? normalize(phone.t.replace(/^Телефон:\s*/i,"")) : "";
@@ -73,31 +71,41 @@ export function parseEstimatePages(pages) {
     .flatMap(l=>l.items.filter(i=>i.x>=43 && i.x<390 && !/Клиент:|Телефон:/.test(i.t)));
   const car=normalize(carItems.map(i=>i.t).join(" "));
   const workCount=Number(count.t.match(/\d+/)?.[0]||0);
-  const total=parsePrice(totalItem.t);
+  const total=parsePrice(totalLine.items.filter(i=>i.x>=385).map(i=>i.t).join(" "));
   if(!car||!clientName||!Number.isFinite(total)||workCount<1||workCount>500)return null;
 
-  // Build rows from actual native-PDF table coordinates and numbered positions.
+  // A red dot is drawn as a shape and has no entry in the PDF text layer.
+  // Both layouts print the amount on the first baseline of every job, even at zero.
   const jobs=[];
-  let inTable=false;
+  let numbered=null,lastLabel=null;
   const flat=all.slice().sort((a,b)=>a.p-b.p||a.y-b.y);
   for(const line of flat) {
-    if(line.text.includes("НАИМЕНОВАНИЕ РАБОТЫ")) {inTable=true;continue}
-    if(line.text.includes("Итого с материалами")) {inTable=false;break}
-    if(!inTable || line.y>795 || line.y<80)continue;
-    const numberItem=rowNumber(line);
-    if(numberItem) {
-      const rowNo=Number(numberItem.t);
-      if(rowNo!==jobs.length+1)return null;
-      jobs.push({number:rowNo,label:"",price:null});
+    if(line.p<tableTitle.p || (line.p===tableTitle.p && line.y<=tableTitle.y))continue;
+    if(line.p===totalLine.p && line.y===totalLine.y)break;
+    if(line.items.some(i=>i.x>=68 && i.x<100 && i.t==="НАИМЕНОВАНИЕ РАБОТЫ") &&
+       line.items.some(i=>i.x>=425 && i.t==="С МАТЕРИАЛАМИ")) {
+      const headerNumbered=line.items.some(i=>i.x<65 && i.t==="№");
+      if(numbered!==null && numbered!==headerNumbered)return null;
+      numbered=headerNumbered;
+      continue;
     }
-    if(!jobs.length)continue;
-    const current=jobs[jobs.length-1];
-    const names=line.items.filter(i=>i.x>=68&&i.x<420&&i.y>80)
-      .map(i=>i.t).filter(t=>!t.includes("НАИМЕНОВАНИЕ РАБОТЫ"));
-    if(names.length)current.label=normalize(current.label+" "+names.join(" "));
-    const priceText=line.items.filter(i=>i.x>=425).map(i=>i.t).join(" ");
-    const price=parsePrice(priceText);
-    if(price!==null)current.price=price;
+    if(numbered===null || line.y>795 || line.y<80)continue;
+    const numberItem=rowNumber(line);
+    const names=line.items.filter(i=>i.x>=68&&i.x<420).map(i=>i.t);
+    const priceItems=line.items.filter(i=>i.x>=425);
+    const price=parsePrice(priceItems.map(i=>i.t).join(" "));
+    if(numberItem || price!==null) {
+      if(!names.length || price===null || price<0 ||
+         (numbered ? Number(numberItem?.t)!==jobs.length+1 : !!numberItem))return null;
+      jobs.push({number:jobs.length+1,label:normalize(names.join(" ")),price});
+    } else if(names.length) {
+      // A label can wrap across pages, with a repeated table header above it.
+      if(!lastLabel || priceItems.length ||
+         (lastLabel.p===line.p && Math.abs(line.y-lastLabel.y-18)>2))return null;
+      const current=jobs[jobs.length-1];
+      current.label=normalize(current.label+" "+names.join(" "));
+    } else if(priceItems.some(i=>/₽/u.test(i.t)))return null;
+    if(names.length)lastLabel=line;
   }
   if(jobs.length!==workCount||jobs.some(j=>!j.label||j.price===null||!Number.isFinite(j.price)))return null;
   const priceSum=rounded(jobs.reduce((sum,j)=>sum+j.price,0));
@@ -151,7 +159,7 @@ export function parseEstimatePages(pages) {
        lower(c.body.join(" "))!==lower(expectedLegal[i].text)))return null;
 
   return {
-    number,date,car,clientName,phone:phoneValue,workCount,works:jobs,
+    number,date,car,clientName,phone:phoneValue,workCount,works:jobs,numbered,
     total,clauses:clauses.map(c=>({title:c.title,body:normalize(c.body.join(" "))})),
     photoTop:carLabel.y-23+11
   };
@@ -320,7 +328,9 @@ export async function buildMobileEstimate(pdf,host) {
   const tbody=el("tbody");
   for(const item of model.works){
     const row=el("tr");
-    row.append(el("td",null,String(item.number).padStart(2,"0")+"  "+item.label),el("td",null,money(item.price)));
+    const name=el("td",model.numbered?null:"m-work-name",
+      model.numbered?String(item.number).padStart(2,"0")+"  "+item.label:item.label);
+    row.append(name,el("td",null,money(item.price)));
     tbody.append(row);
   }
   table.append(tbody);article.append(table);
