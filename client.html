@@ -47,9 +47,8 @@ footer{max-width:900px;margin:10px auto 0;color:#89969f;font-size:11px;padding:0
 .m-car .m-muted{color:#647884;font-size:11px;margin-top:14px}
 .m-photo{width:37%;max-width:170px;aspect-ratio:1/1;object-fit:cover;border-radius:8px;cursor:zoom-in}
 .m-photo:focus-visible{outline:3px solid #b74b57;outline-offset:3px}
-body.m-photo-open{overflow:hidden}
 .m-photo-overlay{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(6,14,20,.96);padding:56px 12px 22px}
-.m-photo-overlay img{max-width:100%;max-height:calc(100dvh - 84px);object-fit:contain;border-radius:7px;box-shadow:0 8px 30px #0008;cursor:zoom-out}
+.m-photo-overlay canvas{display:block;width:100%;height:100%;object-fit:contain;cursor:zoom-out}
 .m-photo-close{position:fixed;right:max(12px,env(safe-area-inset-right));top:max(12px,env(safe-area-inset-top));z-index:10000;display:flex;align-items:center;justify-content:center;width:48px;height:48px;padding:0;border:1px solid #ffffff48;border-radius:50%;background:#293943;color:white;font-size:32px;font-weight:400;line-height:1;cursor:pointer}
 .m-photo-close:focus-visible{outline:3px solid white;outline-offset:3px}
 .m-section{font-size:18px;margin:24px 0 11px;line-height:1.25}
@@ -57,6 +56,8 @@ body.m-photo-open{overflow:hidden}
 .m-works th{background:#edf2f4;color:#586d7a;font-size:10px;text-align:left;text-transform:uppercase;padding:10px 9px}
 .m-works th:last-child,.m-works td:last-child{text-align:right;width:29%;white-space:nowrap}
 .m-works td{padding:12px 9px;line-height:1.4;border-bottom:1px solid #dde5e8;vertical-align:top}
+.m-works .m-work-name{position:relative;padding-left:22px}
+.m-work-name::before{content:"";position:absolute;left:9px;top:18px;width:5px;height:5px;border-radius:50%;background:#c94c5a}
 .m-works tr:nth-child(even){background:#f1f5f7}
 .m-total{display:flex;align-items:baseline;justify-content:space-between;gap:8px;background:#15252f;border-radius:8px;padding:15px 13px;color:#fff;margin:15px 0 20px}
 .m-total span{font-size:12px}.m-total strong{font-size:23px;white-space:nowrap}
@@ -155,7 +156,7 @@ async function start(){
     // layouts are always shown in their original PDF form (no partial estimate).
     let mobileReady=false;
     try {
-      const {buildMobileEstimate}=await import("./mobile-reflow.mjs?v=2");
+      const {buildMobileEstimate}=await import("./mobile-reflow.mjs?v=4");
       mobileReady=await buildMobileEstimate(pdf,q("mobileRoot"));
     } catch(_) { mobileReady=false; }
     if(mobileReady){

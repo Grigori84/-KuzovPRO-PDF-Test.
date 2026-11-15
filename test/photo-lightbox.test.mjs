@@ -11,11 +11,14 @@ function environment() {
     addEventListener(name,cb){(this.listeners[name]??=[]).push(cb)}
     dispatch(name,options={}){for(const cb of this.listeners[name]??[])cb({target:this,preventDefault(){},...options})}
     focus(){doc.activeElement=this}
+    getContext(){return {drawImage:(pic)=>{this.drawnPhoto=pic}}}
   }
   doc.createElement=tag=>new Element(tag);
   doc.body=doc.createElement("body");
   const pic=doc.createElement("img");
   pic.src="data:image/jpeg;base64,/9j/";
+  pic.naturalWidth=270;
+  pic.naturalHeight=252;
   doc.activeElement=pic;
 
   const listeners={};
@@ -48,12 +51,25 @@ test("photo zoom has accessible close and uses Back gesture without leaving the 
   assert.equal(zoom.overlay.hidden,true);
   pic.dispatch("click");
   assert.equal(zoom.overlay.hidden,false);
+  assert.equal(zoom.overlay.children[0].drawnPhoto,pic);
   assert.equal(win.history.index,1);
   assert.equal(zoom.overlay.children[1].attrs["aria-label"],"Закрыть фотографию");
   win.history.back(); // Android Back gesture
   assert.equal(zoom.overlay.hidden,true);
   assert.equal(win.history.index,0);
   assert.equal(doc.activeElement,pic);
+});
+
+test("no dark overlay opens until the thumbnail is decoded",()=>{
+  const {doc,pic,win}=environment();
+  pic.naturalWidth=0;
+  const zoom=attachPhotoLightbox(pic,{doc,win});
+  zoom.open();
+  assert.equal(zoom.overlay.hidden,true);
+  assert.equal(win.history.index,0);
+  pic.naturalWidth=270;
+  zoom.open();
+  assert.equal(zoom.overlay.hidden,false);
 });
 
 test("X, backdrop, enlarged picture, Escape and Enter all work",()=>{

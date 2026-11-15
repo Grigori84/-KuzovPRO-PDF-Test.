@@ -18,7 +18,7 @@ function fixture(price=676) {
       line(293,piece("Телефон: +7 900 000-00-00",46,293)),
       line(369,piece("Работ: 4",46,369)),
       line(410,piece("Перечень работ",32,410,"bold")),
-      line(443,piece("№",43,443),piece("НАИМЕНОВАНИЕ РАБОТЫ",69,443,"bold")),
+      line(443,piece("№",43,443),piece("НАИМЕНОВАНИЕ РАБОТЫ",69,443,"bold"),piece("С МАТЕРИАЛАМИ",464,443,"bold")),
       line(478,piece("01",41,478),piece("Капот — замена + окраска",69,478),piece("100 ₽",521,478)),
       line(514,piece("02",41,514),piece("Кузовные работы",69,514),piece("26 ₽",522,514)),
       line(550,piece("03",41,550),piece("Бампер передний — замена",69,550),piece("500 ₽",522,550)),
@@ -57,6 +57,45 @@ test("new plain title also parses, without preliminary label",()=>{
   pages[0].lines[0].items[0].t="СМЕТА №18/4";
   pages[0].lines[0].text=pages[0].lines[0].items.map(x=>x.t).join(" ");
   assert.equal(parseEstimatePages(pages)?.number,"18/4");
+});
+
+function unnumberedFixture() {
+  const pages=fixture(550);
+  const lines=pages[0].lines;
+  lines[7]=line(443,...lines[7].items.slice(1));
+  lines.splice(8,4,
+    line(478,piece("Капот — замена",69,478),piece("0 ₽",543,478)),
+    line(496,piece("и окраска",69,496)),
+    line(532,piece("Кузовные работы",69,532),piece("0",540,532),piece("₽",555,532)),
+    line(568,piece("Бампер передний — замена",69,568),piece("500 ₽",522,568)),
+    line(604,piece("Стойка — снятие + установка",69,604),piece("50 ₽",522,604)));
+  return pages;
+}
+
+test("reflows unnumbered jobs with split prices and wrapped work labels",()=>{
+  const result=parseEstimatePages(unnumberedFixture());
+  assert.equal(result?.numbered,false);
+  assert.equal(result?.total,550);
+  assert.deepEqual(result?.works.map(job=>job.price),[0,0,500,50]);
+  assert.equal(result?.works[0].label,"Капот — замена и окраска");
+});
+
+test("an unread zero-price row cannot merge into the previous work",()=>{
+  const pages=unnumberedFixture();
+  const index=pages[0].lines.findIndex(l=>l.y===532);
+  pages[0].lines[index]=line(532,piece("Кузовные работы",69,532));
+  assert.equal(parseEstimatePages(pages),null);
+});
+
+test("continued unnumbered labels survive a repeated table heading on the next page",()=>{
+  const pages=unnumberedFixture();
+  const [continuation,...rest]=pages[0].lines.splice(9);
+  pages.splice(1,0,{lines:[
+    line(47,piece("ЭКСПЕРТ",32,47)),
+    line(97,piece("НАИМЕНОВАНИЕ РАБОТЫ",69,97,"bold"),piece("С МАТЕРИАЛАМИ",464,97,"bold")),
+    line(131,...continuation.items),...rest
+  ]});
+  assert.equal(parseEstimatePages(pages)?.works[0].label,"Капот — замена и окраска");
 });
 
 test("does not silently show inconsistent or incomplete estimates",()=>{
