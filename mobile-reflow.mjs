@@ -211,9 +211,9 @@ export function attachPhotoLightbox(pic,{win=window,doc=document}={}) {
   closeButton.type="button";
   closeButton.textContent="×";
   closeButton.setAttribute("aria-label","Закрыть фотографию");
-  const large=doc.createElement("img");
-  large.src=pic.src;
-  large.alt="Фотография автомобиля крупно";
+  const large=doc.createElement("canvas");
+  large.setAttribute("role","img");
+  large.setAttribute("aria-label","Фотография автомобиля крупно");
   overlay.append(large,closeButton);
   doc.body.append(overlay);
 
@@ -232,7 +232,14 @@ export function attachPhotoLightbox(pic,{win=window,doc=document}={}) {
     previousFocus=null;
   }
   function open(){
-    if(!overlay.hidden)return;
+    if(!overlay.hidden || !pic.naturalWidth || !pic.naturalHeight)return;
+    const context=large.getContext("2d");
+    if(!context)return;
+    // Paint the thumbnail already decoded by the browser. The overlay only
+    // opens after the photo is ready, without a second image load.
+    large.width=pic.naturalWidth;
+    large.height=pic.naturalHeight;
+    try{context.drawImage(pic,0,0)}catch{return}
     previousFocus=doc.activeElement;
     previousOverflow=doc.body.style.overflow;
     overlay.hidden=false;
