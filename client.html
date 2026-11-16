@@ -156,7 +156,7 @@ async function start(){
     // layouts are always shown in their original PDF form (no partial estimate).
     let mobileReady=false;
     try {
-      const {buildMobileEstimate}=await import("./mobile-reflow.mjs?v=4");
+      const {buildMobileEstimate}=await import("./mobile-reflow.mjs?v=5");
       mobileReady=await buildMobileEstimate(pdf,q("mobileRoot"));
     } catch(_) { mobileReady=false; }
     if(mobileReady){
