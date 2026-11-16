@@ -43,6 +43,8 @@ export function toLines(content, pageHeight) {
 
 const onPage = (page, cond) => (page?.lines || []).find(cond);
 const pageItem = (page, cond) => (page?.lines || []).flatMap(x=>x.items).find(cond);
+const columnItems = (line, min, max=Infinity) => line.items.filter(i=>i.x>=min && i.x<max);
+const columnText = (line, min, max) => normalize(columnItems(line,min,max).map(i=>i.t).join(" "));
 const rowNumber = group => group.items.find(i=>i.x<65 && /^\d{1,3}$/.test(i.t));
 
 /**
@@ -60,9 +62,12 @@ export function parseEstimatePages(pages) {
   const client=pageItem(first,i=>/^Клиент:\s*.+/i.test(i.t));
   const phone=pageItem(first,i=>/^Телефон:\s*.+/i.test(i.t));
   const count=pageItem(first,i=>/^Работ:\s*\d+$/i.test(i.t));
-  const tableTitle=all.find(l=>l.text.includes("Перечень работ"));
-  const conditionsTitle=all.find(l=>l.text.includes("Важные условия ремонта"));
-  const totalLine=all.find(l=>l.items.some(i=>i.x>=43 && i.x<65 && i.t==="Итого с материалами"));
+  // PDF.js may return one drawn label as multiple text items. Use the
+  // full column while checking its starting position to exclude job names.
+  const tableTitle=all.find(l=>l.items[0]?.x<43 && columnText(l,28,425)==="Перечень работ");
+  const conditionsTitle=all.find(l=>l.items[0]?.x<43 && columnText(l,28,425)==="Важные условия ремонта");
+  const totalLine=all.find(l=>l.items[0]?.x>=43 && l.items[0]?.x<65 &&
+    columnText(l,43,385)==="Итого с материалами");
   if(!number||!date||!carLabel||!client||!count||!tableTitle||!conditionsTitle||!totalLine) return null;
 
   const clientName=normalize(client.t.replace(/^Клиент:\s*/i,""));
@@ -71,7 +76,7 @@ export function parseEstimatePages(pages) {
     .flatMap(l=>l.items.filter(i=>i.x>=43 && i.x<390 && !/Клиент:|Телефон:/.test(i.t)));
   const car=normalize(carItems.map(i=>i.t).join(" "));
   const workCount=Number(count.t.match(/\d+/)?.[0]||0);
-  const total=parsePrice(totalLine.items.filter(i=>i.x>=385).map(i=>i.t).join(" "));
+  const total=parsePrice(columnText(totalLine,385));
   if(!car||!clientName||!Number.isFinite(total)||workCount<1||workCount>500)return null;
 
   // A red dot is drawn as a shape and has no entry in the PDF text layer.
@@ -82,8 +87,8 @@ export function parseEstimatePages(pages) {
   for(const line of flat) {
     if(line.p<tableTitle.p || (line.p===tableTitle.p && line.y<=tableTitle.y))continue;
     if(line.p===totalLine.p && line.y===totalLine.y)break;
-    if(line.items.some(i=>i.x>=68 && i.x<100 && i.t==="НАИМЕНОВАНИЕ РАБОТЫ") &&
-       line.items.some(i=>i.x>=425 && i.t==="С МАТЕРИАЛАМИ")) {
+    if(columnText(line,68,420)==="НАИМЕНОВАНИЕ РАБОТЫ" &&
+       columnText(line,425)==="С МАТЕРИАЛАМИ") {
       const headerNumbered=line.items.some(i=>i.x<65 && i.t==="№");
       if(numbered!==null && numbered!==headerNumbered)return null;
       numbered=headerNumbered;
@@ -91,8 +96,8 @@ export function parseEstimatePages(pages) {
     }
     if(numbered===null || line.y>795 || line.y<80)continue;
     const numberItem=rowNumber(line);
-    const names=line.items.filter(i=>i.x>=68&&i.x<420).map(i=>i.t);
-    const priceItems=line.items.filter(i=>i.x>=425);
+    const names=columnItems(line,68,420).map(i=>i.t);
+    const priceItems=columnItems(line,425);
     const price=parsePrice(priceItems.map(i=>i.t).join(" "));
     if(numberItem || price!==null) {
       if(!names.length || price===null || price<0 ||
@@ -114,7 +119,7 @@ export function parseEstimatePages(pages) {
   // Legal terms: preserve every extracted line below the "conditions" heading.
   // The font used for a clause heading is the same bold face as the section
   // heading. On PDF generators which discard font metadata, use visual gaps.
-  const titleFont=conditionsTitle.items.find(i=>i.t.includes("Важные условия ремонта"))?.font;
+  const titleFont=conditionsTitle.items[0]?.font;
   const clauses=[];
   let reading=false,previous=null;
   for(const line of flat) {

@@ -80,6 +80,23 @@ test("reflows unnumbered jobs with split prices and wrapped work labels",()=>{
   assert.equal(result?.works[0].label,"Капот — замена и окраска");
 });
 
+test("reflows a one-job estimate when PDF.js splits the headings and total label",()=>{
+  const pages=fixture();
+  pages[0].lines.splice(6,7,
+    line(406,piece("Перечень",32,406,"bold"),piece("работ",106,406,"bold")),
+    line(440,piece("НАИМЕНОВАНИЕ",69,440,"bold"),piece("РАБОТЫ",150,440,"bold"),
+      piece("С",476,440,"bold"),piece("МАТЕРИАЛАМИ",486,440,"bold")),
+    line(474,piece("Капот — установка",69,474),piece("12 ₽",541,474)),
+    line(529,piece("Итого",48,529,"bold"),piece("с материалами",85,529,"bold"),piece("12 ₽",514,529)));
+  pages[0].lines[5]=line(369,piece("Работ: 1",46,369));
+  pages[1].lines[1]=line(104,piece("Важные условия",32,104,"bold"),piece("ремонта",155,104,"bold"),
+    piece("Перед согласованием",510,104));
+  const result=parseEstimatePages(pages);
+  assert.equal(result?.total,12);
+  assert.deepEqual(result?.works,[{number:1,label:"Капот — установка",price:12}]);
+  assert.equal(result?.clauses.length,3);
+});
+
 test("an unread zero-price row cannot merge into the previous work",()=>{
   const pages=unnumberedFixture();
   const index=pages[0].lines.findIndex(l=>l.y===532);
